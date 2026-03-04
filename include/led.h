@@ -6,12 +6,14 @@
 #pragma once
 #include <Arduino.h>
 #include <FastLED.h>
+#include <Preferences.h>
 #include "config.h"
 #include "score.h"
 
 namespace LED {
 
 static CRGB _leds[Config::NUM_LEDS];
+static Preferences _prefs;
 
 // Mapping coordonnée → index LED
 // Câblage : zigzag vertical, commence en bas à droite
@@ -144,10 +146,33 @@ inline void drawDigit(int digit, int startX, int startY, CRGB color) {
 
 inline void init() {
   FastLED.addLeds<WS2812B, Config::PIN, GRB>(_leds, Config::NUM_LEDS);
+  
+  // Charge la luminosité depuis NVS (défaut: 80)
+  _prefs.begin("led", true);
+  uint8_t brightness = _prefs.getUChar("brightness", Config::BRIGHTNESS);
+  _prefs.end();
+
   FastLED.setBrightness(Config::BRIGHTNESS);
   FastLED.clear();
   FastLED.show();
   Serial.println("[LED] Initialized");
+}
+
+inline void setBrightness(uint8_t brightness) {
+  brightness = constrain(brightness, 1, 255);
+  FastLED.setBrightness(brightness);
+  FastLED.show();
+  
+  // Sauvegarde en NVS
+  _prefs.begin("led", false);
+  _prefs.putUChar("brightness", brightness);
+  _prefs.end();
+  
+  Serial.printf("[LED] Brightness set to %d\n", brightness);
+}
+
+inline uint8_t getBrightness() {
+  return FastLED.getBrightness();
 }
 
 inline void update(const Score& score) {
