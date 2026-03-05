@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include <Preferences.h>
 #include "config.h"
+#include "mode.h"
 
 namespace WiFiMgr {
 
@@ -73,6 +74,8 @@ inline bool connectSTA() {
   Serial.printf("[WiFi] Connecting to '%s' (attempt %d/%d)...\n", 
     ssid.c_str(), _retryCount + 1, WIFI_MAX_RETRIES);
   
+  // IMPORTANT : Maintenir le mode AP+STA même pendant la connexion
+  WiFi.mode(WIFI_AP_STA);
   WiFi.begin(ssid.c_str(), pass.c_str());
 
   uint32_t start = millis();
@@ -84,11 +87,22 @@ inline bool connectSTA() {
   if (WiFi.status() == WL_CONNECTED) {
     _staConnected = true;
     _retryCount = 0;  // Reset on success
+
+    // Only restart AP if it actually dropped — do NOT call WiFi.mode() here,
+    // it resets the STA interface even when already in AP_STA mode.
+    if (WiFi.softAPIP()[0] == 0) {
+      Serial.println("[WiFi] AP dropped after STA connect, restarting AP...");
+      WiFi.softAP(AP_SSID, AP_PASSWORD);
+      delay(500);
+    }
+
     Serial.printf("[WiFi] STA connected — IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[WiFi] AP active — IP: %s\n", WiFi.softAPIP().toString().c_str());
     return true;
   }
 
   WiFi.disconnect(false);  // Important pour ne pas perturber l'AP
+  WiFi.mode(WIFI_AP_STA);  // Force le dual mode même après échec
   _staConnected = false;
   Serial.println("[WiFi] STA connection failed");
   return false;
@@ -101,16 +115,26 @@ inline void init() {
   
   // Lance le hotspot AP
   WiFi.softAP(AP_SSID, AP_PASSWORD);
+  delay(500);  // Laisse le temps à l'AP de démarrer
   Serial.printf("[WiFi] AP started: %s | IP: %s\n", 
     AP_SSID, WiFi.softAPIP().toString().c_str());
   
   // Tente connexion STA si credentials disponibles
+  delay(500);  // Stabilisation avant STA
   connectSTA();
 }
 
 // ── Tick — retry limité ───────────────────────────────────────────────────
 
 inline void tick() {
+  // Sécurité : vérifie que le mode est toujours AP+STA
+  if (WiFi.getMode() != WIFI_AP_STA) {
+    Serial.println("[WiFi] WARNING: Mode changed, forcing AP+STA");
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    delay(100);
+  }
+  
   if (WiFi.status() == WL_CONNECTED) {
     if (!_staConnected) {
       _staConnected = true;
@@ -126,28 +150,40 @@ inline void tick() {
     Serial.println("[WiFi] STA disconnected");
   }
 
-  // Arrête après MAX_RETRIES échecs
+  // En mode LOCAL, pas besoin de WiFi STA — skip les reconnexions
+  if (Mode::isLocal()) {
+    return;
+  }
+
+  // Arrête AVANT de tenter si on a déjà atteint MAX_RETRIES
   if (_retryCount >= WIFI_MAX_RETRIES) {
-    return;  // Mode AP only permanent jusqu'au prochain boot
+    return;  // Mode AP only permanent jusqu'au prochain boot ou reset manuel
   }
 
   // Retry avec intervalle
   uint32_t now = millis();
   if ((now - _lastRetryTime) >= WIFI_RETRY_INTERVAL_MS) {
     _lastRetryTime = now;
-    _retryCount++;
-    connectSTA();
+    _retryCount++;  // Incrémenter AVANT de tenter
+    
+    // Ne tente que si on n'a pas dépassé la limite
+    if (_retryCount <= WIFI_MAX_RETRIES) {
+      connectSTA();
+    }
   }
 }
 
 // ── Accesseurs ────────────────────────────────────────────────────────────
 
-inline bool isOnline()  { return WiFi.status() == WL_CONNECTED; }
-inline String localIP() { return WiFi.localIP().toString(); }
-inline String apIP()    { return WiFi.softAPIP().toString(); }
+inline bool isOnline()    { return WiFi.status() == WL_CONNECTED; }
+inline String localIP()   { return WiFi.localIP().toString(); }
+inline String apIP()      { return WiFi.softAPIP().toString(); }
+inline String getSSID()   { return WiFi.status() == WL_CONNECTED ? WiFi.SSID() : ""; }
+inline int32_t getRSSI()  { return WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0; }
 
 inline void resetRetryCount() {
   _retryCount = 0;
+  _lastRetryTime = 0;  // Triggers immediate retry on next tick()
   Serial.println("[WiFi] Retry counter reset");
 }
 

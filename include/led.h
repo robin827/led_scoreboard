@@ -152,7 +152,7 @@ inline void init() {
   uint8_t brightness = _prefs.getUChar("brightness", Config::BRIGHTNESS);
   _prefs.end();
 
-  FastLED.setBrightness(Config::BRIGHTNESS);
+  FastLED.setBrightness(brightness);
   FastLED.clear();
   FastLED.show();
   Serial.println("[LED] Initialized");

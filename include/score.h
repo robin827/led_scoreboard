@@ -33,3 +33,4 @@ struct Score {
 
 // Instance globale
 extern Score currentScore;
+extern SemaphoreHandle_t scoreMutex;

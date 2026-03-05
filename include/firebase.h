@@ -13,10 +13,14 @@
 namespace Firebase {
 
 static Preferences _prefs;
+static String _channelCache = "";
+static bool _channelLoaded = false;
 
 // ── Channel (match ID) ────────────────────────────────────────────────────
 
 inline void setChannel(const String& matchId) {
+  _channelCache = matchId;
+  _channelLoaded = true;
   _prefs.begin("firebase", false);
   _prefs.putString("channel", matchId);
   _prefs.end();
@@ -24,10 +28,13 @@ inline void setChannel(const String& matchId) {
 }
 
 inline String getChannel() {
-  _prefs.begin("firebase", true);
-  String channel = _prefs.getString("channel", "");
-  _prefs.end();
-  return channel;
+  if (!_channelLoaded) {
+    _prefs.begin("firebase", true);
+    _channelCache = _prefs.getString("channel", "");
+    _prefs.end();
+    _channelLoaded = true;
+  }
+  return _channelCache;
 }
 
 // ── Lecture du score depuis Firebase ──────────────────────────────────────
@@ -43,87 +50,105 @@ inline bool readScore(Score& score) {
     Serial.println("[Firebase] Not connected");
     return false;
   }
+  
+  // Vérifie que l'IP STA est valide (pas 0.0.0.0)
+  IPAddress localIP = WiFi.localIP();
+  if (localIP[0] == 0) {
+    Serial.println("[Firebase] No valid IP");
+    return false;
+  }
 
-  WiFiClientSecure client;
-  client.setInsecure();
+  // Client SSL statique réutilisé entre les appels
+  static WiFiClientSecure* client = nullptr;
+  if (client == nullptr) {
+    client = new WiFiClientSecure();
+    client->setInsecure();
+    client->setTimeout(10);  // 10s timeout
+  }
+  
   HTTPClient http;
+  http.setTimeout(10000);  // 10s timeout
+  http.setReuse(false);    // Désactive keep-alive
 
-  // Lit active_set
-  String urlActiveSet = String(FIREBASE_DATABASE_URL)
-    + "/match-" + channel + "/active_set.json";
+  // Lit TOUT le match en une seule requête
+  String url = String(FIREBASE_DATABASE_URL)
+    + "/match-" + channel + ".json?shallow=false";
   
-  Serial.printf("[Firebase] Reading channel: match-%s\n", channel.c_str());
-  Serial.printf("[Firebase] URL: %s\n", urlActiveSet.c_str());
+  bool success = http.begin(*client, url);
+  if (!success) {
+    Serial.println("[Firebase] Failed to begin HTTP (DNS error?)");
+    // Recrée le client sur échec
+    delete client;
+    client = nullptr;
+    return false;
+  }
   
-  http.begin(client, urlActiveSet);
   int code = http.GET();
   
   if (code != 200) {
-    Serial.printf("[Firebase] Failed to read active_set: %d\n", code);
-    String response = http.getString();
-    Serial.printf("[Firebase] Response: %s\n", response.c_str());
+    Serial.printf("[Firebase] Failed to read match: %d\n", code);
     http.end();
-    return false;
-  }
-
-  String activeSetStr = http.getString();
-  Serial.printf("[Firebase] active_set raw: %s\n", activeSetStr.c_str());
-  int activeSet = activeSetStr.toInt();
-  http.end();
-
-  if (activeSet < 1) {
-    Serial.println("[Firebase] Invalid active_set");
-    return false;
-  }
-
-  // Lit le score du set actif
-  String urlSet = String(FIREBASE_DATABASE_URL)
-    + "/match-" + channel + "/score/set_" + String(activeSet) + ".json";
-  
-  http.begin(client, urlSet);
-  code = http.GET();
-  
-  if (code != 200) {
-    Serial.printf("[Firebase] Failed to read set_%d: %d\n", activeSet, code);
-    http.end();
+    
+    // Si échec (code négatif = erreur réseau/SSL/DNS), recrée le client
+    if (code < 0) {
+      Serial.println("[Firebase] Network/SSL/DNS error, recreating client");
+      delete client;
+      client = nullptr;
+    }
     return false;
   }
 
   String payload = http.getString();
   http.end();
 
-  // Parse JSON simple
-  int idxA = payload.indexOf("\"team_a_score\":");
-  int idxB = payload.indexOf("\"team_b_score\":");
+  // Parse active_set
+  int idxActiveSet = payload.indexOf("\"active_set\":");
+  if (idxActiveSet < 0) {
+    Serial.println("[Firebase] No active_set found");
+    return false;
+  }
+  int activeSet = payload.substring(idxActiveSet + 13).toInt();
+  
+  if (activeSet < 1) {
+    Serial.println("[Firebase] Invalid active_set");
+    return false;
+  }
+
+  // Parse le set actif
+  String setKey = "\"set_" + String(activeSet) + "\":{";
+  int idxSet = payload.indexOf(setKey);
+  if (idxSet < 0) {
+    Serial.printf("[Firebase] Set %d not found\n", activeSet);
+    return false;
+  }
+
+  int searchStart = idxSet;
+  int idxA = payload.indexOf("\"team_a_score\":", searchStart);
+  int idxB = payload.indexOf("\"team_b_score\":", searchStart);
 
   if (idxA < 0 || idxB < 0) {
-    Serial.println("[Firebase] Invalid JSON");
-    Serial.printf("[Firebase] Payload: %s\n", payload.c_str());
+    Serial.println("[Firebase] Scores not found");
     return false;
   }
 
   score.scoreA = payload.substring(idxA + 15).toInt();
   score.scoreB = payload.substring(idxB + 15).toInt();
 
-  // Compte les sets gagnés (simplifié : parcourt set_1 à set_{activeSet-1})
+  // Compte les sets gagnés
   score.setA = 0;
   score.setB = 0;
 
   for (int i = 1; i < activeSet; i++) {
-    String urlPrevSet = String(FIREBASE_DATABASE_URL)
-      + "/match-" + channel + "/score/set_" + String(i) + ".json";
-    
-    http.begin(client, urlPrevSet);
-    if (http.GET() == 200) {
-      String prevPayload = http.getString();
-      int prevIdxA = prevPayload.indexOf("\"team_a_score\":");
-      int prevIdxB = prevPayload.indexOf("\"team_b_score\":");
+    String prevSetKey = "\"set_" + String(i) + "\":{";
+    int prevIdx = payload.indexOf(prevSetKey);
+    if (prevIdx >= 0) {
+      int prevIdxA = payload.indexOf("\"team_a_score\":", prevIdx);
+      int prevIdxB = payload.indexOf("\"team_b_score\":", prevIdx);
       
       if (prevIdxA >= 0 && prevIdxB >= 0) {
-        int prevScoreA = prevPayload.substring(prevIdxA + 15).toInt();
-        int prevScoreB = prevPayload.substring(prevIdxB + 15).toInt();
+        int prevScoreA = payload.substring(prevIdxA + 15).toInt();
+        int prevScoreB = payload.substring(prevIdxB + 15).toInt();
         
-        // Règle roundnet : ≥21 avec écart de 2
         if (prevScoreA >= 21 && (prevScoreA - prevScoreB) >= 2) {
           score.setA++;
         } else if (prevScoreB >= 21 && (prevScoreB - prevScoreA) >= 2) {
@@ -131,7 +156,6 @@ inline bool readScore(Score& score) {
         }
       }
     }
-    http.end();
   }
 
   Serial.printf("[Firebase] Read OK: A=%d B=%d (sets %d-%d)\n",

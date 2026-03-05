@@ -12,6 +12,7 @@
 #include "mode.h"
 #include "wifi_mgr.h"
 #include "firebase.h"
+#include <ArduinoJson.h>
 
 namespace Portal {
 
@@ -126,9 +127,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <input type="text" class="input" id="channel" placeholder="ex: match-15" onchange="saveChannel()">
     </div>
     
-    <div class="setting-group">
+    <div class="setting-group" id="wifiGroup" style="display:none">
       <label class="setting-label">WiFi <span id="wifiStatus" class="status-badge status-offline">Offline</span></label>
-      <button class="btn btn-scan" onclick="scanWiFi()">Scan Networks</button>
+      <div id="wifiConnected" style="display:none;background:#1a1a1a;border-radius:8px;padding:12px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-size:0.9rem;color:#fff;margin-bottom:4px" id="connectedSSID">—</div>
+            <div style="font-size:0.75rem;color:#666">Signal: <span id="connectedRSSI">—</span> dBm</div>
+          </div>
+          <button class="btn btn-scan" style="margin:0;padding:8px 16px;font-size:0.75rem" onclick="disconnectWiFi()">Disconnect</button>
+        </div>
+      </div>
+      <button class="btn btn-scan" id="btnScan" onclick="scanWiFi()">Scan Networks</button>
       <div class="network-list" id="networkList" style="display:none"></div>
     </div>
     
@@ -164,7 +174,12 @@ async function refresh() {
     currentMode = d.mode;
     document.getElementById('modeLocal').classList.toggle('active', d.mode === 0);
     document.getElementById('modeRead').classList.toggle('active', d.mode === 1);
+    
+    // Affiche Channel et WiFi seulement en mode READ
     document.getElementById('channelGroup').style.display = d.mode === 1 ? 'block' : 'none';
+    document.getElementById('wifiGroup').style.display = d.mode === 1 ? 'block' : 'none';
+    
+    // Grise les contrôles en mode READ
     document.getElementById('controls').style.opacity = d.mode === 1 ? '0.3' : '1';
     document.getElementById('actions').style.opacity = d.mode === 1 ? '0.3' : '1';
     
@@ -179,12 +194,21 @@ async function refresh() {
     
     // WiFi status
     const status = document.getElementById('wifiStatus');
-    if (d.online) {
+    const wifiConnected = document.getElementById('wifiConnected');
+    const btnScan = document.getElementById('btnScan');
+    
+    if (d.online && d.ssid) {
       status.className = 'status-badge status-online';
       status.textContent = 'Online';
+      wifiConnected.style.display = 'block';
+      btnScan.style.display = 'none';
+      document.getElementById('connectedSSID').textContent = d.ssid;
+      document.getElementById('connectedRSSI').textContent = d.rssi;
     } else {
       status.className = 'status-badge status-offline';
       status.textContent = 'Offline';
+      wifiConnected.style.display = 'none';
+      btnScan.style.display = 'block';
     }
   } catch(e) {}
 }
@@ -230,11 +254,20 @@ function connectWiFi(ssid, secure) {
   });
 }
 
-async function setBrightness(val) {
+function disconnectWiFi() {
+  if (!confirm('Disconnect from WiFi?')) return;
+  fetch('/wifi/disconnect', {method:'POST'}).then(() => {
+    setTimeout(refresh, 1000);
+  });
+}
+
+let _brightnessTimer = null;
+function setBrightness(val) {
   document.getElementById('brightVal').textContent = val;
-  try {
-    await fetch('/brightness', {method:'POST', body: val});
-  } catch(e) {}
+  clearTimeout(_brightnessTimer);
+  _brightnessTimer = setTimeout(async () => {
+    try { await fetch('/brightness', {method:'POST', body: val}); } catch(e) {}
+  }, 300);
 }
 
 setInterval(refresh, 2000);
@@ -257,15 +290,21 @@ inline void init() {
   
   // Status JSON (score + mode + WiFi + brightness)
   server->on("/status", HTTP_GET, []() {
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    uint8_t sA = currentScore.scoreA, sB = currentScore.scoreB;
+    uint8_t sSetA = currentScore.setA, sSetB = currentScore.setB;
+    xSemaphoreGive(scoreMutex);
     String json = "{";
-    json += "\"scoreA\":" + String(currentScore.scoreA) + ",";
-    json += "\"scoreB\":" + String(currentScore.scoreB) + ",";
-    json += "\"setA\":" + String(currentScore.setA) + ",";
-    json += "\"setB\":" + String(currentScore.setB) + ",";
+    json += "\"scoreA\":" + String(sA) + ",";
+    json += "\"scoreB\":" + String(sB) + ",";
+    json += "\"setA\":" + String(sSetA) + ",";
+    json += "\"setB\":" + String(sSetB) + ",";
     json += "\"mode\":" + String((int)Mode::get()) + ",";
     json += "\"channel\":\"" + Firebase::getChannel() + "\",";
     json += "\"brightness\":" + String(LED::getBrightness()) + ",";
-    json += "\"online\":" + String(WiFiMgr::isOnline() ? "true" : "false");
+    json += "\"online\":" + String(WiFiMgr::isOnline() ? "true" : "false") + ",";
+    json += "\"ssid\":\"" + WiFiMgr::getSSID() + "\",";
+    json += "\"rssi\":" + String(WiFiMgr::getRSSI());
     json += "}";
     server->send(200, "application/json", json);
   });
@@ -273,48 +312,60 @@ inline void init() {
   // Actions score (seulement en mode LOCAL)
   server->on("/a/inc", HTTP_POST, []() {
     if (Mode::isLocal()) {
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.incrementA();
       LED::update(currentScore);
+      xSemaphoreGive(scoreMutex);
     }
     server->send(200, "text/plain", "OK");
   });
-  
+
   server->on("/a/dec", HTTP_POST, []() {
     if (Mode::isLocal()) {
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.decrementA();
       LED::update(currentScore);
+      xSemaphoreGive(scoreMutex);
     }
     server->send(200, "text/plain", "OK");
   });
-  
+
   server->on("/b/inc", HTTP_POST, []() {
     if (Mode::isLocal()) {
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.incrementB();
       LED::update(currentScore);
+      xSemaphoreGive(scoreMutex);
     }
     server->send(200, "text/plain", "OK");
   });
-  
+
   server->on("/b/dec", HTTP_POST, []() {
     if (Mode::isLocal()) {
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.decrementB();
       LED::update(currentScore);
+      xSemaphoreGive(scoreMutex);
     }
     server->send(200, "text/plain", "OK");
   });
-  
+
   server->on("/nextset", HTTP_POST, []() {
     if (Mode::isLocal()) {
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.nextSet();
       LED::update(currentScore);
+      xSemaphoreGive(scoreMutex);
     }
     server->send(200, "text/plain", "OK");
   });
-  
+
   server->on("/reset", HTTP_POST, []() {
     if (Mode::isLocal()) {
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.reset();
       LED::update(currentScore);
+      xSemaphoreGive(scoreMutex);
     }
     server->send(200, "text/plain", "OK");
   });
@@ -349,28 +400,34 @@ inline void init() {
   // WiFi connect
   server->on("/wifi/connect", HTTP_POST, []() {
     if (server->hasArg("plain")) {
-      String body = server->arg("plain");
-      int idxSsid = body.indexOf("\"ssid\":\"");
-      int idxPass = body.indexOf("\"pass\":\"");
-      if (idxSsid >= 0) {
-        int startSsid = idxSsid + 8;
-        int endSsid = body.indexOf("\"", startSsid);
-        String ssid = body.substring(startSsid, endSsid);
-        
-        String pass = "";
-        if (idxPass >= 0) {
-          int startPass = idxPass + 8;
-          int endPass = body.indexOf("\"", startPass);
-          pass = body.substring(startPass, endPass);
+      JsonDocument doc;
+      if (!deserializeJson(doc, server->arg("plain"))) {
+        const char* ssid = doc["ssid"];
+        const char* pass = doc["pass"] | "";
+        if (ssid && strlen(ssid) > 0) {
+          WiFiMgr::saveCredentials(String(ssid), String(pass));
+          WiFiMgr::resetRetryCount();
+          server->send(200, "text/plain", "OK");
+          return;
         }
-        
-        WiFiMgr::saveCredentials(ssid, pass);
-        WiFiMgr::resetRetryCount();
-        server->send(200, "text/plain", "OK");
-        return;
       }
     }
     server->send(400, "text/plain", "Bad Request");
+  });
+  
+  // WiFi disconnect
+  server->on("/wifi/disconnect", HTTP_POST, []() {
+    WiFiMgr::clearCredentials();
+    WiFi.disconnect();
+    server->send(200, "text/plain", "OK");
+  });
+  
+  // WiFi reset (efface credentials)
+  server->on("/wifi/reset", HTTP_POST, []() {
+    WiFiMgr::clearCredentials();
+    WiFiMgr::resetRetryCount();
+    WiFi.disconnect();
+    server->send(200, "text/plain", "Credentials cleared");
   });
   
   // Brightness
