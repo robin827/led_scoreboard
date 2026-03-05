@@ -27,6 +27,8 @@ void firebaseTask(void* parameter) {
   const uint8_t MAX_CONSECUTIVE_ERRORS = 5;
   
   for(;;) {
+    WiFiMgr::tick();  // STA connection management on Core 0
+
     if (Mode::isRead() && WiFiMgr::isOnline()) {
       uint32_t now = millis();
       if ((now - lastRead) >= currentInterval) {
@@ -119,8 +121,7 @@ void setup() {
 }
 
 void loop() {
-  // Core 1 (défaut) : Portail HTTP + WiFi management
-  WiFiMgr::tick();
+  // Core 1 (défaut) : Portail HTTP uniquement
   Portal::tick();
   
   // Log périodique de l'état WiFi (toutes les 10s)

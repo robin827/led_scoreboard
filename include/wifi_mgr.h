@@ -1,5 +1,5 @@
 /**
- * wifi.h - Gestion WiFi AP + STA avec retry limité
+ * wifi_mgr.h - Gestion WiFi AP + STA, non-blocking state machine
  */
 
 #pragma once
@@ -11,10 +11,13 @@
 
 namespace WiFiMgr {
 
-static bool         _staConnected  = false;
-static uint32_t     _lastRetryTime = 0;
-static uint8_t      _retryCount    = 0;
-static Preferences  _prefs;
+enum class StaState : uint8_t { IDLE, CONNECTING, CONNECTED };
+
+static StaState    _staState      = StaState::IDLE;
+static uint32_t    _connectStart  = 0;
+static uint32_t    _lastRetryTime = 0;
+static uint8_t     _retryCount    = 0;
+static Preferences _prefs;
 
 // ── Credentials NVS ───────────────────────────────────────────────────────
 
@@ -23,7 +26,6 @@ inline void saveCredentials(const String& ssid, const String& password) {
   _prefs.putString("ssid", ssid);
   _prefs.putString("pass", password);
   _prefs.end();
-  _retryCount = 0;  // Reset retry counter
   Serial.printf("[WiFi] Credentials saved: %s\n", ssid.c_str());
 }
 
@@ -40,6 +42,10 @@ inline void clearCredentials() {
   _prefs.clear();
   _prefs.end();
   _retryCount = 0;
+  if (_staState != StaState::IDLE) {
+    WiFi.disconnect(false);
+    _staState = StaState::IDLE;
+  }
   Serial.println("[WiFi] Credentials cleared");
 }
 
@@ -48,128 +54,91 @@ inline void clearCredentials() {
 inline String scanNetworks() {
   Serial.println("[WiFi] Scanning networks...");
   int n = WiFi.scanNetworks();
-  
+
   String json = "[";
-  for (int i = 0; i < n && i < 20; i++) {  // Max 20 réseaux
+  for (int i = 0; i < n && i < 20; i++) {
     if (i > 0) json += ",";
     json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",";
     json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
     json += "\"secure\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "true" : "false") + "}";
   }
   json += "]";
-  
+
   WiFi.scanDelete();
   return json;
-}
-
-// ── Connexion STA ─────────────────────────────────────────────────────────
-
-inline bool connectSTA() {
-  String ssid, pass;
-  if (!loadCredentials(ssid, pass)) {
-    Serial.println("[WiFi] No STA credentials");
-    return false;
-  }
-
-  Serial.printf("[WiFi] Connecting to '%s' (attempt %d/%d)...\n", 
-    ssid.c_str(), _retryCount + 1, WIFI_MAX_RETRIES);
-  
-  // IMPORTANT : Maintenir le mode AP+STA même pendant la connexion
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.begin(ssid.c_str(), pass.c_str());
-
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED &&
-         (millis() - start) < WIFI_CONNECT_TIMEOUT_MS) {
-    delay(200);
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    _staConnected = true;
-    _retryCount = 0;  // Reset on success
-
-    // Only restart AP if it actually dropped — do NOT call WiFi.mode() here,
-    // it resets the STA interface even when already in AP_STA mode.
-    if (WiFi.softAPIP()[0] == 0) {
-      Serial.println("[WiFi] AP dropped after STA connect, restarting AP...");
-      WiFi.softAP(AP_SSID, AP_PASSWORD);
-      delay(500);
-    }
-
-    Serial.printf("[WiFi] STA connected — IP: %s\n", WiFi.localIP().toString().c_str());
-    Serial.printf("[WiFi] AP active — IP: %s\n", WiFi.softAPIP().toString().c_str());
-    return true;
-  }
-
-  WiFi.disconnect(false);  // Important pour ne pas perturber l'AP
-  WiFi.mode(WIFI_AP_STA);  // Force le dual mode même après échec
-  _staConnected = false;
-  Serial.println("[WiFi] STA connection failed");
-  return false;
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
 
 inline void init() {
-  WiFi.mode(WIFI_AP_STA);   // Dual mode : AP + STA
-  
-  // Lance le hotspot AP
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_SSID, AP_PASSWORD);
-  delay(500);  // Laisse le temps à l'AP de démarrer
-  Serial.printf("[WiFi] AP started: %s | IP: %s\n", 
+  delay(500);
+  Serial.printf("[WiFi] AP started: %s | IP: %s\n",
     AP_SSID, WiFi.softAPIP().toString().c_str());
-  
-  // Tente connexion STA si credentials disponibles
-  delay(500);  // Stabilisation avant STA
-  connectSTA();
+
+  // Kick off STA connection non-blocking — tick() manages the result
+  String ssid, pass;
+  if (loadCredentials(ssid, pass)) {
+    Serial.printf("[WiFi] Starting STA connection to '%s'...\n", ssid.c_str());
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    _connectStart = millis();
+    _staState = StaState::CONNECTING;
+  }
 }
 
-// ── Tick — retry limité ───────────────────────────────────────────────────
+// ── Tick — non-blocking state machine ────────────────────────────────────
 
 inline void tick() {
-  // Sécurité : vérifie que le mode est toujours AP+STA
+  // Ensure AP stays up
   if (WiFi.getMode() != WIFI_AP_STA) {
     Serial.println("[WiFi] WARNING: Mode changed, forcing AP+STA");
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
-    delay(100);
   }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    if (!_staConnected) {
-      _staConnected = true;
+
+  // ── CONNECTED ──
+  if (_staState == StaState::CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED) {
+      _staState = StaState::IDLE;
+      _lastRetryTime = millis();
+      Serial.println("[WiFi] STA disconnected");
+    }
+    return;
+  }
+
+  // ── CONNECTING ──
+  if (_staState == StaState::CONNECTING) {
+    if (WiFi.status() == WL_CONNECTED) {
       _retryCount = 0;
-      Serial.println("[WiFi] STA reconnected");
+      _staState = StaState::CONNECTED;
+      if (WiFi.softAPIP()[0] == 0) {
+        WiFi.softAP(AP_SSID, AP_PASSWORD);
+      }
+      Serial.printf("[WiFi] STA connected — IP: %s\n", WiFi.localIP().toString().c_str());
+      Serial.printf("[WiFi] AP active — IP: %s\n", WiFi.softAPIP().toString().c_str());
+    } else if ((millis() - _connectStart) >= WIFI_CONNECT_TIMEOUT_MS) {
+      WiFi.disconnect(false);
+      _retryCount++;
+      _lastRetryTime = millis();
+      _staState = StaState::IDLE;
+      Serial.printf("[WiFi] STA timed out (attempt %d/%d)\n", _retryCount, WIFI_MAX_RETRIES);
     }
     return;
   }
 
-  // STA déconnectée
-  if (_staConnected) {
-    _staConnected = false;
-    Serial.println("[WiFi] STA disconnected");
-  }
+  // ── IDLE: schedule next retry ──
+  if (Mode::isLocal()) return;
+  if (_retryCount >= WIFI_MAX_RETRIES) return;
 
-  // En mode LOCAL, pas besoin de WiFi STA — skip les reconnexions
-  if (Mode::isLocal()) {
-    return;
-  }
-
-  // Arrête AVANT de tenter si on a déjà atteint MAX_RETRIES
-  if (_retryCount >= WIFI_MAX_RETRIES) {
-    return;  // Mode AP only permanent jusqu'au prochain boot ou reset manuel
-  }
-
-  // Retry avec intervalle
-  uint32_t now = millis();
-  if ((now - _lastRetryTime) >= WIFI_RETRY_INTERVAL_MS) {
-    _lastRetryTime = now;
-    _retryCount++;  // Incrémenter AVANT de tenter
-    
-    // Ne tente que si on n'a pas dépassé la limite
-    if (_retryCount <= WIFI_MAX_RETRIES) {
-      connectSTA();
-    }
+  if ((millis() - _lastRetryTime) >= WIFI_RETRY_INTERVAL_MS) {
+    String ssid, pass;
+    if (!loadCredentials(ssid, pass)) return;
+    Serial.printf("[WiFi] Connecting to '%s' (attempt %d/%d)...\n",
+      ssid.c_str(), _retryCount + 1, WIFI_MAX_RETRIES);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    _connectStart = millis();
+    _staState = StaState::CONNECTING;
   }
 }
 
@@ -183,7 +152,12 @@ inline int32_t getRSSI()  { return WiFi.status() == WL_CONNECTED ? WiFi.RSSI() :
 
 inline void resetRetryCount() {
   _retryCount = 0;
-  _lastRetryTime = 0;  // Triggers immediate retry on next tick()
+  _lastRetryTime = 0;
+  // Abort any in-progress connection so tick() starts fresh immediately
+  if (_staState == StaState::CONNECTING) {
+    WiFi.disconnect(false);
+    _staState = StaState::IDLE;
+  }
   Serial.println("[WiFi] Retry counter reset");
 }
 
