@@ -18,6 +18,9 @@ static uint32_t    _connectStart  = 0;
 static uint32_t    _lastRetryTime = 0;
 static uint8_t     _retryCount    = 0;
 static Preferences _prefs;
+static String      _cachedSsid   = "";
+static String      _cachedPass   = "";
+static bool        _credsCached  = false;
 
 // ── Credentials NVS ───────────────────────────────────────────────────────
 
@@ -26,14 +29,28 @@ inline void saveCredentials(const String& ssid, const String& password) {
   _prefs.putString("ssid", ssid);
   _prefs.putString("pass", password);
   _prefs.end();
+  _cachedSsid  = ssid;
+  _cachedPass  = password;
+  _credsCached = true;
   Serial.printf("[WiFi] Credentials saved: %s\n", ssid.c_str());
 }
 
 inline bool loadCredentials(String& ssid, String& password) {
+  if (_credsCached) {
+    ssid     = _cachedSsid;
+    password = _cachedPass;
+    return ssid.length() > 0;
+  }
   _prefs.begin("wifi", true);
-  ssid     = _prefs.getString("ssid", "");
-  password = _prefs.getString("pass", "");
+  bool hasSsid = _prefs.isKey("ssid");
+  if (hasSsid) {
+    _cachedSsid = _prefs.getString("ssid", "");
+    _cachedPass = _prefs.getString("pass", "");
+  }
   _prefs.end();
+  _credsCached = true;
+  ssid     = _cachedSsid;
+  password = _cachedPass;
   return ssid.length() > 0;
 }
 
@@ -41,6 +58,9 @@ inline void clearCredentials() {
   _prefs.begin("wifi", false);
   _prefs.clear();
   _prefs.end();
+  _cachedSsid  = "";
+  _cachedPass  = "";
+  _credsCached = false;
   _retryCount = 0;
   if (_staState != StaState::IDLE) {
     WiFi.disconnect(false);

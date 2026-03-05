@@ -6,6 +6,7 @@
 #include <Arduino.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
 #include <Preferences.h>
 #include "config.h"
 #include "score.h"
@@ -15,6 +16,23 @@ namespace Firebase {
 static Preferences _prefs;
 static String _channelCache = "";
 static bool _channelLoaded = false;
+
+// Shared SSL client — reused across read and write to avoid memory leaks
+static WiFiClientSecure* _client = nullptr;
+
+inline WiFiClientSecure* _getClient() {
+  if (_client == nullptr) {
+    _client = new WiFiClientSecure();
+    _client->setInsecure();
+    _client->setTimeout(10);
+  }
+  return _client;
+}
+
+inline void _resetClient() {
+  delete _client;
+  _client = nullptr;
+}
 
 // ── Channel (match ID) ────────────────────────────────────────────────────
 
@@ -58,42 +76,27 @@ inline bool readScore(Score& score) {
     return false;
   }
 
-  // Client SSL statique réutilisé entre les appels
-  static WiFiClientSecure* client = nullptr;
-  if (client == nullptr) {
-    client = new WiFiClientSecure();
-    client->setInsecure();
-    client->setTimeout(10);  // 10s timeout
-  }
-  
   HTTPClient http;
-  http.setTimeout(10000);  // 10s timeout
-  http.setReuse(false);    // Désactive keep-alive
+  http.setTimeout(10000);
+  http.setReuse(false);
 
-  // Lit TOUT le match en une seule requête
   String url = String(FIREBASE_DATABASE_URL)
     + "/match-" + channel + ".json?shallow=false";
-  
-  bool success = http.begin(*client, url);
-  if (!success) {
+
+  if (!http.begin(*_getClient(), url)) {
     Serial.println("[Firebase] Failed to begin HTTP (DNS error?)");
-    // Recrée le client sur échec
-    delete client;
-    client = nullptr;
+    _resetClient();
     return false;
   }
-  
+
   int code = http.GET();
-  
+
   if (code != 200) {
     Serial.printf("[Firebase] Failed to read match: %d\n", code);
     http.end();
-    
-    // Si échec (code négatif = erreur réseau/SSL/DNS), recrée le client
     if (code < 0) {
       Serial.println("[Firebase] Network/SSL/DNS error, recreating client");
-      delete client;
-      client = nullptr;
+      _resetClient();
     }
     return false;
   }
@@ -162,6 +165,64 @@ inline bool readScore(Score& score) {
     score.scoreA, score.scoreB, score.setA, score.setB);
 
   return true;
+}
+
+// ── Ecriture du score vers Firebase ───────────────────────────────────────
+
+inline bool writeScore(const Score& score) {
+  String channel = getChannel();
+  if (channel.isEmpty()) {
+    Serial.println("[Firebase] No channel configured");
+    return false;
+  }
+
+  if (!WiFi.isConnected()) return false;
+  IPAddress localIP = WiFi.localIP();
+  if (localIP[0] == 0) return false;
+
+  HTTPClient http;
+  http.setTimeout(10000);
+  http.setReuse(false);
+
+  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + ".json";
+
+  if (!http.begin(*_getClient(), url)) {
+    Serial.println("[Firebase] Write: failed to begin HTTP");
+    _resetClient();
+    return false;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+
+  // Build payload: active_set + all historical sets + current set
+  JsonDocument doc;
+  int activeSet = score.setA + score.setB + 1;
+  doc["active_set"] = activeSet;
+
+  for (int i = 0; i < activeSet - 1; i++) {
+    String key = "set_" + String(i + 1);
+    doc["score"][key]["team_a_score"] = score.histA[i];
+    doc["score"][key]["team_b_score"] = score.histB[i];
+  }
+  String currentKey = "set_" + String(activeSet);
+  doc["score"][currentKey]["team_a_score"] = score.scoreA;
+  doc["score"][currentKey]["team_b_score"] = score.scoreB;
+
+  String payload;
+  serializeJson(doc, payload);
+
+  int code = http.PATCH(payload);
+  http.end();
+
+  if (code < 0) {
+    Serial.printf("[Firebase] Write error: %d, recreating client\n", code);
+    _resetClient();
+    return false;
+  }
+
+  Serial.printf("[Firebase] Write OK: A=%d B=%d (set %d, code %d)\n",
+    score.scoreA, score.scoreB, activeSet, code);
+  return code == 200;
 }
 
 } // namespace Firebase

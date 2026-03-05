@@ -119,6 +119,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <div class="mode-selector">
         <button class="mode-btn" id="modeLocal" onclick="setMode(0)">Local</button>
         <button class="mode-btn" id="modeRead" onclick="setMode(1)">Read</button>
+        <button class="mode-btn" id="modeWrite" onclick="setMode(2)">Write</button>
       </div>
     </div>
     
@@ -174,12 +175,14 @@ async function refresh() {
     currentMode = d.mode;
     document.getElementById('modeLocal').classList.toggle('active', d.mode === 0);
     document.getElementById('modeRead').classList.toggle('active', d.mode === 1);
-    
-    // Affiche Channel et WiFi seulement en mode READ
-    document.getElementById('channelGroup').style.display = d.mode === 1 ? 'block' : 'none';
-    document.getElementById('wifiGroup').style.display = d.mode === 1 ? 'block' : 'none';
-    
-    // Grise les contrôles en mode READ
+    document.getElementById('modeWrite').classList.toggle('active', d.mode === 2);
+
+    // Channel and WiFi visible in READ and WRITE modes
+    const needsCloud = d.mode !== 0;
+    document.getElementById('channelGroup').style.display = needsCloud ? 'block' : 'none';
+    document.getElementById('wifiGroup').style.display = needsCloud ? 'block' : 'none';
+
+    // Controls disabled only in READ mode
     document.getElementById('controls').style.opacity = d.mode === 1 ? '0.3' : '1';
     document.getElementById('actions').style.opacity = d.mode === 1 ? '0.3' : '1';
     
@@ -309,9 +312,9 @@ inline void init() {
     server->send(200, "application/json", json);
   });
   
-  // Actions score (seulement en mode LOCAL)
+  // Actions score (modes LOCAL et WRITE)
   server->on("/a/inc", HTTP_POST, []() {
-    if (Mode::isLocal()) {
+    if (!Mode::isRead()) {
       xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.incrementA();
       LED::update(currentScore);
@@ -321,7 +324,7 @@ inline void init() {
   });
 
   server->on("/a/dec", HTTP_POST, []() {
-    if (Mode::isLocal()) {
+    if (!Mode::isRead()) {
       xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.decrementA();
       LED::update(currentScore);
@@ -331,7 +334,7 @@ inline void init() {
   });
 
   server->on("/b/inc", HTTP_POST, []() {
-    if (Mode::isLocal()) {
+    if (!Mode::isRead()) {
       xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.incrementB();
       LED::update(currentScore);
@@ -341,7 +344,7 @@ inline void init() {
   });
 
   server->on("/b/dec", HTTP_POST, []() {
-    if (Mode::isLocal()) {
+    if (!Mode::isRead()) {
       xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.decrementB();
       LED::update(currentScore);
@@ -351,7 +354,7 @@ inline void init() {
   });
 
   server->on("/nextset", HTTP_POST, []() {
-    if (Mode::isLocal()) {
+    if (!Mode::isRead()) {
       xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.nextSet();
       LED::update(currentScore);
@@ -361,7 +364,7 @@ inline void init() {
   });
 
   server->on("/reset", HTTP_POST, []() {
-    if (Mode::isLocal()) {
+    if (!Mode::isRead()) {
       xSemaphoreTake(scoreMutex, portMAX_DELAY);
       currentScore.reset();
       LED::update(currentScore);

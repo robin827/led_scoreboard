@@ -67,8 +67,23 @@ void firebaseTask(void* parameter) {
         
         Serial.printf("[Firebase] Free heap after: %d\n", ESP.getFreeHeap());
       }
+    } else if (Mode::isWrite() && WiFiMgr::isOnline()) {
+      // Write mode: push score to Firebase whenever it changes
+      static Score lastWritten;
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      Score toWrite = currentScore;
+      xSemaphoreGive(scoreMutex);
+
+      if (toWrite.scoreA != lastWritten.scoreA ||
+          toWrite.scoreB != lastWritten.scoreB ||
+          toWrite.setA   != lastWritten.setA   ||
+          toWrite.setB   != lastWritten.setB) {
+        if (Firebase::writeScore(toWrite)) {
+          lastWritten = toWrite;
+        }
+      }
     } else {
-      // Reset compteur d'erreurs en mode LOCAL
+      // LOCAL mode or offline — reset READ counters
       consecutiveErrors = 0;
       currentInterval = READ_INTERVAL_SUCCESS;
     }
