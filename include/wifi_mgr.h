@@ -17,6 +17,7 @@ static StaState    _staState      = StaState::IDLE;
 static uint32_t    _connectStart  = 0;
 static uint32_t    _lastRetryTime = 0;
 static uint8_t     _retryCount    = 0;
+static uint8_t     _lostCount     = 0;   // consecutive missed status checks
 static Preferences _prefs;
 static String      _cachedSsid   = "";
 static String      _cachedPass   = "";
@@ -72,6 +73,12 @@ inline void clearCredentials() {
 // ── Scan réseaux ──────────────────────────────────────────────────────────
 
 inline String scanNetworks() {
+  // Don't scan while connecting — WiFi.scanNetworks() is blocking and
+  // interrupts the association handshake, causing the attempt to time out.
+  if (_staState == StaState::CONNECTING) {
+    Serial.println("[WiFi] Scan skipped: connection in progress");
+    return "[]";
+  }
   Serial.println("[WiFi] Scanning networks...");
   int n = WiFi.scanNetworks();
 
@@ -97,32 +104,39 @@ inline void init() {
   Serial.printf("[WiFi] AP started: %s | IP: %s\n",
     AP_SSID, WiFi.softAPIP().toString().c_str());
 
-  // Kick off STA connection non-blocking — tick() manages the result
+  // Let tick() handle the first connection attempt after a short stabilisation delay.
+  // WiFi.mode() resets the internal stack; attempting WiFi.begin() too quickly after
+  // softAP() causes the first scan to fail. tick() will connect after ~3s.
   String ssid, pass;
   if (loadCredentials(ssid, pass)) {
-    Serial.printf("[WiFi] Starting STA connection to '%s'...\n", ssid.c_str());
-    WiFi.begin(ssid.c_str(), pass.c_str());
-    _connectStart = millis();
-    _staState = StaState::CONNECTING;
+    _lastRetryTime = millis() - WIFI_RETRY_INTERVAL_MS + 3000;  // first attempt in ~3s
+    Serial.printf("[WiFi] Will connect to '%s' in ~3s...\n", ssid.c_str());
   }
 }
 
 // ── Tick — non-blocking state machine ────────────────────────────────────
 
 inline void tick() {
-  // Ensure AP stays up
-  if (WiFi.getMode() != WIFI_AP_STA) {
-    Serial.println("[WiFi] WARNING: Mode changed, forcing AP+STA");
-    WiFi.mode(WIFI_AP_STA);
+  // Restore AP only if it actually dropped — NEVER call WiFi.mode() here:
+  // calling it resets the STA stack even when already in AP_STA mode.
+  if (WiFi.softAPIP()[0] == 0) {
+    Serial.println("[WiFi] AP dropped, restoring...");
     WiFi.softAP(AP_SSID, AP_PASSWORD);
   }
 
   // ── CONNECTED ──
   if (_staState == StaState::CONNECTED) {
     if (WiFi.status() != WL_CONNECTED) {
-      _staState = StaState::IDLE;
-      _lastRetryTime = millis();
-      Serial.println("[WiFi] STA disconnected");
+      // Debounce: require 5 consecutive failures (~500ms) before declaring lost
+      if (++_lostCount >= 5) {
+        _lostCount = 0;
+        _retryCount = 0;  // fresh attempts after each disconnect
+        _staState = StaState::IDLE;
+        _lastRetryTime = millis();
+        Serial.println("[WiFi] STA disconnected");
+      }
+    } else {
+      _lostCount = 0;
     }
     return;
   }
@@ -164,7 +178,7 @@ inline void tick() {
 
 // ── Accesseurs ────────────────────────────────────────────────────────────
 
-inline bool isOnline()    { return WiFi.status() == WL_CONNECTED; }
+inline bool isOnline()    { return _staState == StaState::CONNECTED; }
 inline String localIP()   { return WiFi.localIP().toString(); }
 inline String apIP()      { return WiFi.softAPIP().toString(); }
 inline String getSSID()   { return WiFi.status() == WL_CONNECTED ? WiFi.SSID() : ""; }
@@ -172,6 +186,7 @@ inline int32_t getRSSI()  { return WiFi.status() == WL_CONNECTED ? WiFi.RSSI() :
 
 inline void resetRetryCount() {
   _retryCount = 0;
+  _lostCount = 0;
   _lastRetryTime = 0;
   // Abort any in-progress connection so tick() starts fresh immediately
   if (_staState == StaState::CONNECTING) {

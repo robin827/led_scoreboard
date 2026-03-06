@@ -32,7 +32,10 @@ static const char HTML[] PROGMEM = R"rawhtml(
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0a0a;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
 .container{width:100%;max-width:400px}
 .header{text-align:center;margin-bottom:40px}
-.logo{font-size:0.75rem;letter-spacing:4px;text-transform:uppercase;color:#444;margin-bottom:8px;font-weight:600}
+.logo{font-size:0.75rem;letter-spacing:4px;text-transform:uppercase;color:#444;margin-bottom:8px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px}
+.pulse{width:6px;height:6px;border-radius:50%;background:#222;flex-shrink:0;transition:background .3s}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.15}}
+.pulse.live{animation:blink .5s 1;background:#4a9eff}
 .scoreboard{background:#111;border-radius:20px;padding:30px 20px;margin-bottom:20px;box-shadow:0 8px 32px rgba(0,0,0,0.4)}
 .scores{display:flex;justify-content:space-around;align-items:center;margin-bottom:30px;position:relative}
 .team{text-align:center}
@@ -44,51 +47,67 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .score-a{color:#ff6b35}
 .score-b{color:#4a9eff}
 .divider{width:1px;height:60px;background:#222}
-.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px}
-.btn{border:none;border-radius:12px;padding:16px;font-size:1rem;font-weight:600;cursor:pointer;transition:all .2s;background:#1a1a1a;color:#fff;-webkit-tap-highlight-color:transparent}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px;transition:opacity .2s}
+.btn{border:none;border-radius:12px;padding:16px;font-size:1rem;font-weight:600;cursor:pointer;transition:transform .1s,opacity .1s;background:#1a1a1a;color:#fff;-webkit-tap-highlight-color:transparent;user-select:none;touch-action:manipulation}
 .btn:active{transform:scale(0.96)}
-.btn-primary-a{background:#ff6b35;color:#fff}
-.btn-primary-b{background:#4a9eff;color:#fff}
+.btn.flash{opacity:0.4;transform:scale(0.93)}
+.btn-primary-a{background:#ff6b35}
+.btn-primary-b{background:#4a9eff}
 .btn-secondary-a{background:rgba(255,107,53,0.15);color:#ff6b35;border:1px solid rgba(255,107,53,0.3)}
 .btn-secondary-b{background:rgba(74,158,255,0.15);color:#4a9eff;border:1px solid rgba(74,158,255,0.3)}
-.actions{display:flex;flex-direction:column;gap:10px;margin-top:20px;padding-top:20px;border-top:1px solid #1a1a1a}
+.btn-repeat{touch-action:none}
+.actions{display:flex;flex-direction:column;gap:10px;margin-top:20px;padding-top:20px;border-top:1px solid #1a1a1a;transition:opacity .2s}
 .actions .btn{font-size:0.85rem;background:#1a1a1a;color:#888}
+.btn-hold{position:relative;overflow:hidden;touch-action:none}
+.btn-hold::after{content:'';position:absolute;left:0;top:0;height:100%;width:0;background:rgba(255,255,255,0.13);border-radius:12px}
+.btn-hold.holding::after{width:100%;transition:width .5s linear}
 .settings{background:#111;border-radius:20px;padding:20px;margin-top:20px}
 .setting-group{margin-bottom:20px}
 .setting-group:last-child{margin-bottom:0}
-.setting-label{font-size:0.75rem;letter-spacing:1px;text-transform:uppercase;color:#555;margin-bottom:8px;display:block}
+.setting-label{font-size:0.75rem;letter-spacing:1px;text-transform:uppercase;color:#555;margin-bottom:8px;display:flex;align-items:center;gap:6px}
 .mode-selector{display:flex;gap:8px}
 .mode-btn{flex:1;padding:12px;border:none;border-radius:8px;background:#1a1a1a;color:#666;font-size:0.85rem;font-weight:600;cursor:pointer;transition:all .2s}
 .mode-btn.active{background:#4a9eff;color:#fff}
+.mode-hint{font-size:0.75rem;color:#555;margin-top:10px;line-height:1.5;padding:8px 10px;background:#0f0f0f;border-radius:8px;border-left:2px solid #333}
 .input{width:100%;background:#1a1a1a;border:1px solid #222;border-radius:8px;color:#fff;padding:12px;font-size:0.9rem;outline:none}
 .input:focus{border-color:#4a9eff}
-.slider{width:100%;height:6px;border-radius:3px;background:#1a1a1a;outline:none;-webkit-appearance:none;appearance:none}
-.slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:18px;height:18px;border-radius:50%;background:#fff;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.4)}
-.slider::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:#fff;cursor:pointer;border:none;box-shadow:0 2px 8px rgba(0,0,0,0.4)}
-.slider-value{text-align:center;margin-top:8px;font-size:0.85rem;color:#666;font-variant-numeric:tabular-nums}
-.network-list{max-height:200px;overflow-y:auto;background:#1a1a1a;border-radius:8px;margin-top:8px}
-.network-item{padding:12px;border-bottom:1px solid #222;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.slider{width:100%;height:28px;border-radius:14px;background:linear-gradient(to right,#111 0%,#fff 100%);outline:none;-webkit-appearance:none;appearance:none;cursor:pointer;margin-bottom:6px}
+.slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:22px;height:22px;border-radius:50%;background:#fff;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,0.6)}
+.slider::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#fff;cursor:pointer;border:none;box-shadow:0 2px 10px rgba(0,0,0,0.6)}
+.slider-value{text-align:right;font-size:0.8rem;color:#555;font-variant-numeric:tabular-nums}
+.network-list{max-height:220px;overflow-y:auto;background:#1a1a1a;border-radius:8px;margin-top:8px}
+.network-item{border-bottom:1px solid #222}
 .network-item:last-child{border-bottom:none}
-.network-item:hover{background:#222}
+.network-header{padding:12px;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.network-header:hover,.network-header:active{background:#252525}
 .network-name{color:#fff;font-size:0.9rem}
-.network-signal{color:#666;font-size:0.75rem}
-.btn-scan{width:100%;margin-top:8px;padding:12px;background:#1a1a1a;color:#888;font-size:0.85rem}
-.status-badge{display:inline-block;padding:4px 8px;border-radius:6px;font-size:0.7rem;font-weight:600;margin-left:8px}
+.network-signal{color:#555;font-size:0.75rem}
+.network-form{display:none;padding:8px 12px 12px;gap:8px}
+.network-form.open{display:flex}
+.net-pass{flex:1;background:#111;border:1px solid #333;border-radius:6px;color:#fff;padding:8px 10px;font-size:0.85rem;outline:none}
+.net-pass:focus{border-color:#4a9eff}
+.net-connect{padding:8px 14px;background:#4a9eff;color:#fff;border:none;border-radius:6px;font-size:0.85rem;font-weight:600;cursor:pointer;white-space:nowrap}
+.btn-scan{width:100%;margin-top:8px;padding:12px;background:#1a1a1a;color:#888;font-size:0.85rem;border-radius:12px}
+.btn-scan:disabled{opacity:0.45;cursor:default}
+.btn-disconnect{width:100%;margin-top:8px;padding:10px;background:rgba(255,60,60,0.07);color:#f66;border:1px solid rgba(255,60,60,0.2);border-radius:8px;font-size:0.8rem;font-weight:600;cursor:pointer}
+.status-badge{padding:3px 8px;border-radius:6px;font-size:0.7rem;font-weight:600;text-transform:none;letter-spacing:0}
 .status-online{background:rgba(74,158,255,0.15);color:#4a9eff;border:1px solid rgba(74,158,255,0.3)}
-.status-offline{background:rgba(136,136,136,0.15);color:#888;border:1px solid rgba(136,136,136,0.3)}
+.status-offline{background:rgba(136,136,136,0.1);color:#555;border:1px solid rgba(136,136,136,0.2)}
+.status-connecting{background:rgba(255,180,0,0.15);color:#ffb400;border:1px solid rgba(255,180,0,0.3)}
+.wifi-indicator{align-items:center;gap:5px;font-size:0.72rem;color:#4a9eff;margin-top:6px;justify-content:center}
 </style>
 </head>
 <body>
 <div class="container">
   <div class="header">
-    <div class="logo">Roundnet Scoreboard</div>
+    <div class="logo">Roundnet Scoreboard <span id="pulse" class="pulse"></span></div>
+    <div id="wifiIndicator" class="wifi-indicator" style="display:none"><svg width="13" height="10" viewBox="0 0 13 10" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><circle cx="6.5" cy="8.5" r="1.2"/><path d="M4 5.8C4.7 5 5.6 4.6 6.5 4.6S8.3 5 9 5.8" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/><path d="M1.5 3C2.9 1.5 4.6.7 6.5.7S10.1 1.5 11.5 3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/></svg><span id="wifiIndicatorSSID"></span></div>
   </div>
-  
+
   <div class="scoreboard">
     <div class="scores">
       <div class="set-badge set-badge-a" id="setA">0</div>
       <div class="set-badge set-badge-b" id="setB">0</div>
-      
       <div class="team">
         <div class="team-label">Team A</div>
         <div class="score score-a" id="scoreA">00</div>
@@ -99,20 +118,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         <div class="score score-b" id="scoreB">00</div>
       </div>
     </div>
-    
+
     <div class="controls" id="controls">
-      <button class="btn btn-primary-a" onclick="action('/a/inc')">+1</button>
-      <button class="btn btn-primary-b" onclick="action('/b/inc')">+1</button>
-      <button class="btn btn-secondary-a" onclick="action('/a/dec')">−1</button>
-      <button class="btn btn-secondary-b" onclick="action('/b/dec')">−1</button>
+      <button class="btn btn-primary-a btn-repeat" onpointerdown="startRepeat('/a/inc',this)" onpointerup="stopRepeat()" onpointerleave="stopRepeat()">+1</button>
+      <button class="btn btn-primary-b btn-repeat" onpointerdown="startRepeat('/b/inc',this)" onpointerup="stopRepeat()" onpointerleave="stopRepeat()">+1</button>
+      <button class="btn btn-secondary-a" onclick="action('/a/dec',this)">−1</button>
+      <button class="btn btn-secondary-b" onclick="action('/b/dec',this)">−1</button>
     </div>
-    
+
     <div class="actions" id="actions">
-      <button class="btn" onclick="action('/nextset')">Next Set</button>
-      <button class="btn" onclick="action('/reset')">Reset Match</button>
+      <button class="btn btn-hold" onpointerdown="startHold(this,'/nextset')" onpointerup="cancelHold()" onpointerleave="cancelHold()">Hold: Next Set</button>
+      <button class="btn btn-hold" onpointerdown="startHold(this,'/reset')" onpointerup="cancelHold()" onpointerleave="cancelHold()">Hold: Reset</button>
     </div>
   </div>
-  
+
+  <div class="settings">
+    <div class="setting-group">
+      <label class="setting-label">Brightness</label>
+      <input type="range" id="brightness" class="slider" min="1" max="255" value="80" oninput="setBrightness(this.value)">
+      <div class="slider-value"><span id="brightVal">31</span>%</div>
+    </div>
+  </div>
+
   <div class="settings">
     <div class="setting-group">
       <label class="setting-label">Mode</label>
@@ -121,45 +148,64 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         <button class="mode-btn" id="modeRead" onclick="setMode(1)">Read</button>
         <button class="mode-btn" id="modeWrite" onclick="setMode(2)">Write</button>
       </div>
+      <div class="mode-hint" id="modeHint" style="display:none"></div>
     </div>
-    
+
     <div class="setting-group" id="channelGroup" style="display:none">
       <label class="setting-label">Channel (Match ID)</label>
       <input type="text" class="input" id="channel" placeholder="ex: match-15" onchange="saveChannel()">
     </div>
-    
+
     <div class="setting-group" id="wifiGroup" style="display:none">
       <label class="setting-label">WiFi <span id="wifiStatus" class="status-badge status-offline">Offline</span></label>
-      <div id="wifiConnected" style="display:none;background:#1a1a1a;border-radius:8px;padding:12px;margin-bottom:8px">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <div style="font-size:0.9rem;color:#fff;margin-bottom:4px" id="connectedSSID">—</div>
-            <div style="font-size:0.75rem;color:#666">Signal: <span id="connectedRSSI">—</span> dBm</div>
-          </div>
-          <button class="btn btn-scan" style="margin:0;padding:8px 16px;font-size:0.75rem" onclick="disconnectWiFi()">Disconnect</button>
-        </div>
-      </div>
       <button class="btn btn-scan" id="btnScan" onclick="scanWiFi()">Scan Networks</button>
       <div class="network-list" id="networkList" style="display:none"></div>
-    </div>
-    
-    <div class="setting-group">
-      <label class="setting-label">Brightness</label>
-      <input type="range" id="brightness" class="slider" min="1" max="255" value="80" oninput="setBrightness(this.value)">
-      <div class="slider-value"><span id="brightVal">80</span> / 255</div>
+      <button class="btn-disconnect" id="btnDisconnect" style="display:none" onclick="disconnectWiFi()">Disconnect from <span id="connectedSSID"></span></button>
     </div>
   </div>
 </div>
 
 <script>
 let currentMode = 0;
+let _online = false;
+let _isConnecting = false;
+let _repeatTimer = null, _repeatStart = null;
+let _holdTimer = null, _holdBtn = null;
 
-async function action(url) {
-  if (currentMode === 1) return; // Pas d'actions en mode READ
-  try {
-    await fetch(url, {method:'POST'});
-    refresh();
-  } catch(e) {}
+async function action(url, btn) {
+  if (currentMode === 1) return;
+  if (btn) { btn.classList.add('flash'); setTimeout(() => btn.classList.remove('flash'), 150); }
+  try { await fetch(url, {method:'POST'}); refresh(); } catch(e) {}
+}
+
+function startRepeat(url, btn) {
+  if (currentMode === 1) return;
+  action(url, btn);
+  _repeatStart = setTimeout(() => {
+    _repeatTimer = setInterval(() => action(url), 180);
+  }, 550);
+}
+
+function stopRepeat() {
+  clearTimeout(_repeatStart);
+  clearInterval(_repeatTimer);
+  _repeatStart = _repeatTimer = null;
+}
+
+function startHold(btn, url) {
+  if (currentMode === 1) return;
+  _holdBtn = btn;
+  btn.classList.add('holding');
+  _holdTimer = setTimeout(async () => {
+    btn.classList.remove('holding');
+    _holdBtn = null;
+    await action(url);
+  }, 500);
+}
+
+function cancelHold() {
+  if (_holdBtn) { _holdBtn.classList.remove('holding'); _holdBtn = null; }
+  clearTimeout(_holdTimer);
 }
 
 async function refresh() {
@@ -170,106 +216,171 @@ async function refresh() {
     document.getElementById('scoreB').textContent = String(d.scoreB).padStart(2,'0');
     document.getElementById('setA').textContent = d.setA;
     document.getElementById('setB').textContent = d.setB;
-    
-    // Mode
+
     currentMode = d.mode;
     document.getElementById('modeLocal').classList.toggle('active', d.mode === 0);
     document.getElementById('modeRead').classList.toggle('active', d.mode === 1);
     document.getElementById('modeWrite').classList.toggle('active', d.mode === 2);
 
-    // Channel and WiFi visible in READ and WRITE modes
-    const needsCloud = d.mode !== 0;
-    document.getElementById('channelGroup').style.display = needsCloud ? 'block' : 'none';
-    document.getElementById('wifiGroup').style.display = needsCloud ? 'block' : 'none';
+    document.getElementById('channelGroup').style.display = d.mode !== 0 ? 'block' : 'none';
+    document.getElementById('wifiGroup').style.display = d.mode !== 0 ? 'block' : 'none';
 
-    // Controls disabled only in READ mode
-    document.getElementById('controls').style.opacity = d.mode === 1 ? '0.3' : '1';
-    document.getElementById('actions').style.opacity = d.mode === 1 ? '0.3' : '1';
-    
-    // Channel
+    _online = d.online;
+
+    const hint = document.getElementById('modeHint');
+    const wifiLink = ' <a href="#" onclick="document.getElementById(\'wifiGroup\').scrollIntoView({behavior:\'smooth\'});return false" style="color:#ffb400;text-decoration:none;font-weight:600">Connect below \u2193</a>';
+    if (d.mode === 1) {
+      hint.style.display = 'block';
+      hint.innerHTML = 'Read mode: scores are pulled from Firebase. A WiFi connection is required.' + (!d.online ? wifiLink : '');
+    } else if (d.mode === 2) {
+      hint.style.display = 'block';
+      hint.innerHTML = 'Write mode: scores are pushed to Firebase. Still works offline, syncs when connected.' + (!d.online ? wifiLink : '');
+    } else { hint.style.display = 'none'; }
+
+    const readMode = d.mode === 1;
+    const cs = document.getElementById('controls').style;
+    const as = document.getElementById('actions').style;
+    cs.opacity = as.opacity = readMode ? '0.3' : '1';
+    cs.pointerEvents = as.pointerEvents = readMode ? 'none' : '';
+
     if (d.channel) document.getElementById('channel').value = d.channel;
-    
-    // Brightness
-    if (d.brightness !== undefined) {
+
+    if (d.brightness !== undefined && !_brightnessDirty) {
       document.getElementById('brightness').value = d.brightness;
-      document.getElementById('brightVal').textContent = d.brightness;
+      document.getElementById('brightVal').textContent = Math.round(d.brightness / 255 * 100);
     }
-    
-    // WiFi status
+
+    const indicator = document.getElementById('wifiIndicator');
     const status = document.getElementById('wifiStatus');
-    const wifiConnected = document.getElementById('wifiConnected');
-    const btnScan = document.getElementById('btnScan');
-    
+    const btnDisc = document.getElementById('btnDisconnect');
     if (d.online && d.ssid) {
+      _isConnecting = false;
+      indicator.style.display = d.mode === 0 ? 'flex' : 'none';
+      document.getElementById('wifiIndicatorSSID').textContent = d.ssid;
       status.className = 'status-badge status-online';
-      status.textContent = 'Online';
-      wifiConnected.style.display = 'block';
-      btnScan.style.display = 'none';
+      status.textContent = d.ssid + (d.rssi ? ' \u00b7 ' + d.rssi + ' dBm' : '');
       document.getElementById('connectedSSID').textContent = d.ssid;
-      document.getElementById('connectedRSSI').textContent = d.rssi;
+      btnDisc.style.display = 'block';
+    } else if (_isConnecting) {
+      indicator.style.display = 'none';
+      status.className = 'status-badge status-connecting';
+      status.textContent = 'Connecting\u2026';
+      btnDisc.style.display = 'none';
     } else {
+      indicator.style.display = 'none';
       status.className = 'status-badge status-offline';
       status.textContent = 'Offline';
-      wifiConnected.style.display = 'none';
-      btnScan.style.display = 'block';
+      btnDisc.style.display = 'none';
     }
+
+    const p = document.getElementById('pulse');
+    p.classList.remove('live');
+    void p.offsetWidth;
+    p.classList.add('live');
   } catch(e) {}
 }
 
 async function setMode(mode) {
   try {
     await fetch('/mode', {method:'POST', body: String(mode)});
-    refresh();
+    await refresh();
+    if (mode !== 0 && !_online) {
+      document.getElementById('wifiGroup').scrollIntoView({behavior:'smooth'});
+      scanWiFi();
+    }
   } catch(e) {}
 }
 
 async function saveChannel() {
-  const channel = document.getElementById('channel').value;
-  try {
-    await fetch('/channel', {method:'POST', body: channel});
-  } catch(e) {}
+  try { await fetch('/channel', {method:'POST', body: document.getElementById('channel').value}); } catch(e) {}
 }
 
 async function scanWiFi() {
+  const btn = document.getElementById('btnScan');
+  btn.disabled = true;
+  btn.textContent = 'Scanning\u2026';
   try {
     const r = await fetch('/wifi/scan');
-    const networks = await r.json();
+    const nets = await r.json();
     const list = document.getElementById('networkList');
     list.innerHTML = '';
-    networks.forEach(net => {
+    nets.forEach(net => {
       const item = document.createElement('div');
       item.className = 'network-item';
-      item.onclick = () => connectWiFi(net.ssid, net.secure);
-      item.innerHTML = `<span class="network-name">${net.ssid}</span><span class="network-signal">${net.rssi} dBm</span>`;
+      item.dataset.ssid = net.ssid;
+      item.dataset.secure = net.secure ? '1' : '0';
+      const hdr = document.createElement('div');
+      hdr.className = 'network-header';
+      const name = document.createElement('span');
+      name.className = 'network-name';
+      name.textContent = net.ssid;
+      const sig = document.createElement('span');
+      sig.className = 'network-signal';
+      sig.textContent = net.rssi + ' dBm';
+      hdr.appendChild(name);
+      hdr.appendChild(sig);
+      hdr.addEventListener('click', () => toggleForm(item));
+      const form = document.createElement('div');
+      form.className = 'network-form';
+      if (net.secure) {
+        const pw = document.createElement('input');
+        pw.type = 'password';
+        pw.placeholder = 'Password';
+        pw.className = 'net-pass';
+        form.appendChild(pw);
+      }
+      const cb = document.createElement('button');
+      cb.className = 'net-connect';
+      cb.textContent = 'Connect';
+      cb.addEventListener('click', e => { e.stopPropagation(); submitConnect(item); });
+      form.appendChild(cb);
+      item.appendChild(hdr);
+      item.appendChild(form);
       list.appendChild(item);
     });
-    list.style.display = 'block';
+    list.style.display = nets.length ? 'block' : 'none';
   } catch(e) {}
+  btn.disabled = false;
+  btn.textContent = 'Scan Networks';
 }
 
-function connectWiFi(ssid, secure) {
-  const pass = secure ? prompt(`Password for ${ssid}:`) : '';
-  if (pass === null && secure) return;
-  fetch('/wifi/connect', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ssid, pass})
-  });
+function toggleForm(item) {
+  const form = item.querySelector('.network-form');
+  const wasOpen = form.classList.contains('open');
+  document.querySelectorAll('.network-form.open').forEach(f => f.classList.remove('open'));
+  if (!wasOpen) {
+    form.classList.add('open');
+    const pw = form.querySelector('.net-pass');
+    if (pw) pw.focus();
+  }
+}
+
+function submitConnect(item) {
+  const ssid = item.dataset.ssid;
+  const pass = (item.querySelector('.net-pass') || {value:''}).value;
+  fetch('/wifi/connect', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ssid, pass})});
+  _isConnecting = true;
+  document.getElementById('networkList').style.display = 'none';
+  const s = document.getElementById('wifiStatus');
+  s.className = 'status-badge status-connecting';
+  s.textContent = 'Connecting\u2026';
+  setTimeout(refresh, 1000);
 }
 
 function disconnectWiFi() {
   if (!confirm('Disconnect from WiFi?')) return;
-  fetch('/wifi/disconnect', {method:'POST'}).then(() => {
-    setTimeout(refresh, 1000);
-  });
+  fetch('/wifi/disconnect', {method:'POST'}).then(() => { _isConnecting = false; setTimeout(refresh, 500); });
 }
 
 let _brightnessTimer = null;
+let _brightnessDirty = false;
 function setBrightness(val) {
-  document.getElementById('brightVal').textContent = val;
+  document.getElementById('brightVal').textContent = Math.round(val / 255 * 100);
+  _brightnessDirty = true;
   clearTimeout(_brightnessTimer);
   _brightnessTimer = setTimeout(async () => {
     try { await fetch('/brightness', {method:'POST', body: val}); } catch(e) {}
+    _brightnessDirty = false;
   }, 300);
 }
 
@@ -444,28 +555,28 @@ inline void init() {
     }
   });
   
-  // Redirection
+  // Redirection captive portal
   server->onNotFound([]() {
     server->sendHeader("Location", "/", true);
     server->send(302, "text/plain", "");
   });
-  
+
   // Routes spéciales pour détection captive portal Android/iOS
   server->on("/generate_204", HTTP_GET, []() {
     server->sendHeader("Location", "/", true);
     server->send(302, "text/plain", "");
   });
-  
+
   server->on("/hotspot-detect.html", HTTP_GET, []() {
     server->sendHeader("Location", "/", true);
     server->send(302, "text/plain", "");
   });
-  
+
   server->on("/canonical.html", HTTP_GET, []() {
     server->sendHeader("Location", "/", true);
     server->send(302, "text/plain", "");
   });
-  
+
   server->on("/success.txt", HTTP_GET, []() {
     server->send(200, "text/plain", "success");
   });
