@@ -29,72 +29,75 @@ static const char HTML[] PROGMEM = R"rawhtml(
 <title>Roundnet Scoreboard</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0a0a;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1c1830;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
 .container{width:100%;max-width:400px}
-.header{text-align:center;margin-bottom:40px}
-.logo{font-size:0.75rem;letter-spacing:4px;text-transform:uppercase;color:#444;margin-bottom:8px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px}
-.pulse{width:6px;height:6px;border-radius:50%;background:#222;flex-shrink:0;transition:background .3s}
+.header{text-align:center;margin-bottom:32px}
+.logo{font-size:0.7rem;letter-spacing:4px;text-transform:uppercase;color:#8070a8;margin-bottom:8px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px}
+.pulse{width:6px;height:6px;border-radius:50%;background:#3a3460;flex-shrink:0;transition:background .3s}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.15}}
-.pulse.live{animation:blink .5s 1;background:#4a9eff}
-.scoreboard{background:#111;border-radius:20px;padding:30px 20px;margin-bottom:20px;box-shadow:0 8px 32px rgba(0,0,0,0.4)}
-.scores{display:flex;justify-content:space-around;align-items:center;margin-bottom:30px;position:relative}
+.pulse.live{animation:blink .5s 1;background:#f5c518}
+.scoreboard{background:#251f40;border-radius:20px;padding:28px 20px 20px;margin-bottom:16px;box-shadow:0 8px 40px rgba(0,0,0,0.4)}
+.scores{display:flex;justify-content:space-around;align-items:center;margin-bottom:16px;position:relative}
 .team{text-align:center}
-.team-label{font-size:0.7rem;letter-spacing:2px;text-transform:uppercase;color:#555;margin-bottom:12px}
-.set-badge{position:absolute;top:50%;transform:translateY(-50%);background:#1a1a1a;border-radius:6px;padding:3px 8px;font-size:0.7rem;font-weight:700;min-width:24px;text-align:center}
-.set-badge-a{color:#ff6b35;border:1px solid rgba(255,107,53,0.3);right:calc(50% + 16px)}
-.set-badge-b{color:#4a9eff;border:1px solid rgba(74,158,255,0.3);left:calc(50% + 16px)}
+.team-label{font-size:0.65rem;letter-spacing:2px;text-transform:uppercase;color:#8070a8;margin-bottom:10px}
+.set-badge{position:absolute;top:50%;transform:translateY(-50%);background:#3a3460;border-radius:6px;padding:3px 8px;font-size:0.7rem;font-weight:700;min-width:24px;text-align:center}
+.set-badge-a{color:#f5c518;border:1px solid rgba(245,197,24,0.35);right:calc(50% + 16px)}
+.set-badge-b{color:#e83e8c;border:1px solid rgba(232,62,140,0.35);left:calc(50% + 16px)}
 .score{font-size:4rem;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
-.score-a{color:#ff6b35}
-.score-b{color:#4a9eff}
-.divider{width:1px;height:60px;background:#222}
-.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px;transition:opacity .2s}
-.btn{border:none;border-radius:12px;padding:16px;font-size:1rem;font-weight:600;cursor:pointer;transition:transform .1s,opacity .1s;background:#1a1a1a;color:#fff;-webkit-tap-highlight-color:transparent;user-select:none;touch-action:manipulation}
+.score-a{color:#f5c518}
+.score-b{color:#e83e8c}
+.divider{width:1px;height:60px;background:#3a3460}
+.ratio-bar{display:flex;height:4px;border-radius:2px;overflow:hidden;margin-bottom:20px;gap:2px}
+.ratio-a{background:#f5c518;border-radius:2px;transition:flex .4s;flex:1}
+.ratio-b{background:#e83e8c;border-radius:2px;transition:flex .4s;flex:1}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;transition:opacity .2s}
+.btn{border:none;border-radius:12px;padding:16px;font-size:1rem;font-weight:600;cursor:pointer;transition:transform .1s,opacity .1s;background:#3a3460;color:#fff;-webkit-tap-highlight-color:transparent;user-select:none;touch-action:manipulation}
 .btn:active{transform:scale(0.96)}
 .btn.flash{opacity:0.4;transform:scale(0.93)}
-.btn-primary-a{background:#ff6b35}
-.btn-primary-b{background:#4a9eff}
-.btn-secondary-a{background:rgba(255,107,53,0.15);color:#ff6b35;border:1px solid rgba(255,107,53,0.3)}
-.btn-secondary-b{background:rgba(74,158,255,0.15);color:#4a9eff;border:1px solid rgba(74,158,255,0.3)}
+.btn-primary-a{background:#f5c518;color:#1c1830}
+.btn-primary-b{background:#e83e8c;color:#fff}
+.btn-secondary-a{background:rgba(245,197,24,0.15);color:#f5c518;border:1px solid rgba(245,197,24,0.3)}
+.btn-secondary-b{background:rgba(232,62,140,0.15);color:#e83e8c;border:1px solid rgba(232,62,140,0.3)}
 .btn-repeat{touch-action:none}
-.actions{display:flex;flex-direction:column;gap:10px;margin-top:20px;padding-top:20px;border-top:1px solid #1a1a1a;transition:opacity .2s}
-.actions .btn{font-size:0.85rem;background:#1a1a1a;color:#888}
+.actions{display:flex;flex-direction:column;gap:10px;padding-top:16px;border-top:1px solid #3a3460;transition:opacity .2s}
+.actions .btn{font-size:0.85rem;background:#3a3460;color:#8070a8}
 .btn-hold{position:relative;overflow:hidden;touch-action:none}
-.btn-hold::after{content:'';position:absolute;left:0;top:0;height:100%;width:0;background:rgba(255,255,255,0.13);border-radius:12px}
+.btn-hold::after{content:'';position:absolute;left:0;top:0;height:100%;width:0;background:rgba(255,255,255,0.1);border-radius:12px}
 .btn-hold.holding::after{width:100%;transition:width .5s linear}
-.settings{background:#111;border-radius:20px;padding:20px;margin-top:20px}
+.settings{background:#251f40;border-radius:20px;padding:20px;margin-top:16px}
 .setting-group{margin-bottom:20px}
 .setting-group:last-child{margin-bottom:0}
-.setting-label{font-size:0.75rem;letter-spacing:1px;text-transform:uppercase;color:#555;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.setting-label{font-size:0.68rem;letter-spacing:1px;text-transform:uppercase;color:#8070a8;margin-bottom:10px;display:flex;align-items:center;gap:6px}
 .mode-selector{display:flex;gap:8px}
-.mode-btn{flex:1;padding:12px;border:none;border-radius:8px;background:#1a1a1a;color:#666;font-size:0.85rem;font-weight:600;cursor:pointer;transition:all .2s}
-.mode-btn.active{background:#4a9eff;color:#fff}
-.mode-hint{font-size:0.75rem;color:#555;margin-top:10px;line-height:1.5;padding:8px 10px;background:#0f0f0f;border-radius:8px;border-left:2px solid #333}
-.input{width:100%;background:#1a1a1a;border:1px solid #222;border-radius:8px;color:#fff;padding:12px;font-size:0.9rem;outline:none}
-.input:focus{border-color:#4a9eff}
-.slider{width:100%;height:28px;border-radius:14px;background:linear-gradient(to right,#111 0%,#fff 100%);outline:none;-webkit-appearance:none;appearance:none;cursor:pointer;margin-bottom:6px}
-.slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:22px;height:22px;border-radius:50%;background:#fff;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,0.6)}
-.slider::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#fff;cursor:pointer;border:none;box-shadow:0 2px 10px rgba(0,0,0,0.6)}
-.slider-value{text-align:right;font-size:0.8rem;color:#555;font-variant-numeric:tabular-nums}
-.network-list{max-height:220px;overflow-y:auto;background:#1a1a1a;border-radius:8px;margin-top:8px}
-.network-item{border-bottom:1px solid #222}
+.mode-btn{flex:1;padding:12px;border:none;border-radius:8px;background:#3a3460;color:#8070a8;font-size:0.85rem;font-weight:600;cursor:pointer;transition:all .2s}
+.mode-btn.active{background:#f5c518;color:#1c1830}
+.mode-hint{font-size:0.75rem;color:#8070a8;margin-top:10px;line-height:1.5;padding:8px 10px;background:#1c1830;border-radius:8px;border-left:2px solid #3a3460}
+.input{width:100%;background:#3a3460;border:1px solid #4a4478;border-radius:8px;color:#fff;padding:12px;font-size:0.9rem;outline:none}
+.input:focus{border-color:#f5c518}
+.slider{width:100%;height:28px;border-radius:14px;background:linear-gradient(to right,#3a3460 0%,#f5c518 100%);outline:none;-webkit-appearance:none;appearance:none;cursor:pointer;margin-bottom:6px}
+.slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:22px;height:22px;border-radius:50%;background:#f5c518;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,0.5)}
+.slider::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#f5c518;cursor:pointer;border:none;box-shadow:0 2px 10px rgba(0,0,0,0.5)}
+.slider-value{text-align:right;font-size:0.8rem;color:#8070a8;font-variant-numeric:tabular-nums}
+.network-list{max-height:220px;overflow-y:auto;background:#3a3460;border-radius:8px;margin-top:8px}
+.network-item{border-bottom:1px solid #4a4478}
 .network-item:last-child{border-bottom:none}
 .network-header{padding:12px;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
-.network-header:hover,.network-header:active{background:#252525}
+.network-header:hover,.network-header:active{background:#443e6e}
 .network-name{color:#fff;font-size:0.9rem}
-.network-signal{color:#555;font-size:0.75rem}
+.network-signal{color:#8070a8;font-size:0.75rem}
 .network-form{display:none;padding:8px 12px 12px;gap:8px}
 .network-form.open{display:flex}
-.net-pass{flex:1;background:#111;border:1px solid #333;border-radius:6px;color:#fff;padding:8px 10px;font-size:0.85rem;outline:none}
-.net-pass:focus{border-color:#4a9eff}
-.net-connect{padding:8px 14px;background:#4a9eff;color:#fff;border:none;border-radius:6px;font-size:0.85rem;font-weight:600;cursor:pointer;white-space:nowrap}
-.btn-scan{width:100%;margin-top:8px;padding:12px;background:#1a1a1a;color:#888;font-size:0.85rem;border-radius:12px}
+.net-pass{flex:1;background:#251f40;border:1px solid #4a4478;border-radius:6px;color:#fff;padding:8px 10px;font-size:0.85rem;outline:none}
+.net-pass:focus{border-color:#f5c518}
+.net-connect{padding:8px 14px;background:#f5c518;color:#1c1830;border:none;border-radius:6px;font-size:0.85rem;font-weight:600;cursor:pointer;white-space:nowrap}
+.btn-scan{width:100%;margin-top:8px;padding:12px;background:#3a3460;color:#8070a8;font-size:0.85rem;border-radius:12px}
 .btn-scan:disabled{opacity:0.45;cursor:default}
-.btn-disconnect{width:100%;margin-top:8px;padding:10px;background:rgba(255,60,60,0.07);color:#f66;border:1px solid rgba(255,60,60,0.2);border-radius:8px;font-size:0.8rem;font-weight:600;cursor:pointer}
+.btn-disconnect{width:100%;margin-top:8px;padding:10px;background:rgba(232,62,140,0.1);color:#e83e8c;border:1px solid rgba(232,62,140,0.3);border-radius:8px;font-size:0.8rem;font-weight:600;cursor:pointer}
 .status-badge{padding:3px 8px;border-radius:6px;font-size:0.7rem;font-weight:600;text-transform:none;letter-spacing:0}
-.status-online{background:rgba(74,158,255,0.15);color:#4a9eff;border:1px solid rgba(74,158,255,0.3)}
-.status-offline{background:rgba(136,136,136,0.1);color:#555;border:1px solid rgba(136,136,136,0.2)}
-.status-connecting{background:rgba(255,180,0,0.15);color:#ffb400;border:1px solid rgba(255,180,0,0.3)}
-.wifi-indicator{align-items:center;gap:5px;font-size:0.72rem;color:#4a9eff;margin-top:6px;justify-content:center}
+.status-online{background:rgba(245,197,24,0.15);color:#f5c518;border:1px solid rgba(245,197,24,0.35)}
+.status-offline{background:rgba(128,112,168,0.15);color:#8070a8;border:1px solid rgba(128,112,168,0.25)}
+.status-connecting{background:rgba(232,62,140,0.15);color:#e83e8c;border:1px solid rgba(232,62,140,0.35)}
+.wifi-indicator{align-items:center;gap:5px;font-size:0.72rem;color:#f5c518;margin-top:6px;justify-content:center}
 </style>
 </head>
 <body>
@@ -118,6 +121,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         <div class="score score-b" id="scoreB">00</div>
       </div>
     </div>
+
+    <div class="ratio-bar"><div class="ratio-a" id="ratioA"></div><div class="ratio-b" id="ratioB"></div></div>
 
     <div class="controls" id="controls">
       <button class="btn btn-primary-a btn-repeat" onpointerdown="startRepeat('/a/inc',this)" onpointerup="stopRepeat()" onpointerleave="stopRepeat()">+1</button>
@@ -217,6 +222,10 @@ async function refresh() {
     document.getElementById('setA').textContent = d.setA;
     document.getElementById('setB').textContent = d.setB;
 
+    const total = d.scoreA + d.scoreB;
+    document.getElementById('ratioA').style.flex = total > 0 ? d.scoreA : 1;
+    document.getElementById('ratioB').style.flex = total > 0 ? d.scoreB : 1;
+
     currentMode = d.mode;
     document.getElementById('modeLocal').classList.toggle('active', d.mode === 0);
     document.getElementById('modeRead').classList.toggle('active', d.mode === 1);
@@ -228,7 +237,7 @@ async function refresh() {
     _online = d.online;
 
     const hint = document.getElementById('modeHint');
-    const wifiLink = ' <a href="#" onclick="document.getElementById(\'wifiGroup\').scrollIntoView({behavior:\'smooth\'});return false" style="color:#ffb400;text-decoration:none;font-weight:600">Connect below \u2193</a>';
+    const wifiLink = ' <a href="#" onclick="document.getElementById(\'wifiGroup\').scrollIntoView({behavior:\'smooth\'});return false" style="color:#f5c518;text-decoration:none;font-weight:600">Connect below \u2193</a>';
     if (d.mode === 1) {
       hint.style.display = 'block';
       hint.innerHTML = 'Read mode: scores are pulled from Firebase. A WiFi connection is required.' + (!d.online ? wifiLink : '');
