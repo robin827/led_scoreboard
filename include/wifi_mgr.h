@@ -1,5 +1,9 @@
 /**
- * wifi_mgr.h - Gestion WiFi AP + STA, non-blocking state machine
+ * wifi_mgr.h - WiFi AP + STA using ESP32 native events + constant retry.
+ *
+ * State detection is event-driven (no status polling).
+ * Retries are managed in tick() with a fixed 25s interval.
+ * LOCAL mode skips retries entirely.  No hard retry limit.
  */
 
 #pragma once
@@ -11,77 +15,81 @@
 
 namespace WiFiMgr {
 
-enum class StaState : uint8_t { IDLE, CONNECTING, CONNECTED };
-
-static StaState    _staState      = StaState::IDLE;
-static uint32_t    _connectStart  = 0;
-static uint32_t    _lastRetryTime = 0;
-static uint8_t     _retryCount    = 0;
-static uint8_t     _lostCount     = 0;   // consecutive missed status checks
 static Preferences _prefs;
-static String      _cachedSsid   = "";
-static String      _cachedPass   = "";
-static bool        _credsCached  = false;
+static String      _cachedSsid    = "";
+static String      _cachedPass    = "";
+static bool        _credsCached   = false;
+static bool        _online        = false;
+static bool        _connecting    = false;
+static uint32_t    _lastRetryTime = 0;
 
 // ── Credentials NVS ───────────────────────────────────────────────────────
+
+inline bool loadCredentials(String& ssid, String& password) {
+  if (_credsCached) { ssid = _cachedSsid; password = _cachedPass; return ssid.length() > 0; }
+  _prefs.begin("wifi", true);
+  if (_prefs.isKey("ssid")) {
+    _cachedSsid = _prefs.getString("ssid", "");
+    _cachedPass = _prefs.getString("pass", "");
+  }
+  _prefs.end();
+  _credsCached = true;
+  ssid = _cachedSsid; password = _cachedPass;
+  return ssid.length() > 0;
+}
 
 inline void saveCredentials(const String& ssid, const String& password) {
   _prefs.begin("wifi", false);
   _prefs.putString("ssid", ssid);
   _prefs.putString("pass", password);
   _prefs.end();
-  _cachedSsid  = ssid;
-  _cachedPass  = password;
-  _credsCached = true;
+  _cachedSsid = ssid; _cachedPass = password; _credsCached = true;
   Serial.printf("[WiFi] Credentials saved: %s\n", ssid.c_str());
-}
-
-inline bool loadCredentials(String& ssid, String& password) {
-  if (_credsCached) {
-    ssid     = _cachedSsid;
-    password = _cachedPass;
-    return ssid.length() > 0;
-  }
-  _prefs.begin("wifi", true);
-  bool hasSsid = _prefs.isKey("ssid");
-  if (hasSsid) {
-    _cachedSsid = _prefs.getString("ssid", "");
-    _cachedPass = _prefs.getString("pass", "");
-  }
-  _prefs.end();
-  _credsCached = true;
-  ssid     = _cachedSsid;
-  password = _cachedPass;
-  return ssid.length() > 0;
+  _online = false; _connecting = true;
+  WiFi.begin(ssid.c_str(), password.c_str());
 }
 
 inline void clearCredentials() {
   _prefs.begin("wifi", false);
   _prefs.clear();
   _prefs.end();
-  _cachedSsid  = "";
-  _cachedPass  = "";
-  _credsCached = false;
-  _retryCount = 0;
-  if (_staState != StaState::IDLE) {
-    WiFi.disconnect(false);
-    _staState = StaState::IDLE;
-  }
+  _cachedSsid = ""; _cachedPass = ""; _credsCached = false;
+  _online = false; _connecting = false;
+  WiFi.disconnect(false);
   Serial.println("[WiFi] Credentials cleared");
 }
 
-// ── Scan réseaux ──────────────────────────────────────────────────────────
+// ── WiFi event handler ─────────────────────────────────────────────────────
+
+static void _onEvent(WiFiEvent_t event) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      _online = true; _connecting = false;
+      Serial.printf("[WiFi] Connected — STA: %s | AP: %s\n",
+        WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str());
+      break;
+
+    case ARDUINO_EVENT_WIFI_STA_LOST_IP:
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      _online = false;
+      _connecting = false;
+      _lastRetryTime = millis();
+      Serial.println("[WiFi] Disconnected — retry in 25s");
+      break;
+
+    default: break;
+  }
+}
+
+// ── Scan networks ──────────────────────────────────────────────────────────
 
 inline String scanNetworks() {
-  // Don't scan while connecting — WiFi.scanNetworks() is blocking and
-  // interrupts the association handshake, causing the attempt to time out.
-  if (_staState == StaState::CONNECTING) {
+  if (_connecting) {
     Serial.println("[WiFi] Scan skipped: connection in progress");
     return "[]";
   }
-  Serial.println("[WiFi] Scanning networks...");
+  Serial.println("[WiFi] Scanning...");
   int n = WiFi.scanNetworks();
-
   String json = "[";
   for (int i = 0; i < n && i < 20; i++) {
     if (i > 0) json += ",";
@@ -90,7 +98,6 @@ inline String scanNetworks() {
     json += "\"secure\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "true" : "false") + "}";
   }
   json += "]";
-
   WiFi.scanDelete();
   return json;
 }
@@ -98,102 +105,58 @@ inline String scanNetworks() {
 // ── Init ──────────────────────────────────────────────────────────────────
 
 inline void init() {
+  WiFi.onEvent(_onEvent);
+  WiFi.persistent(false);         // credentials managed by NVS, not the SDK
+  WiFi.setAutoReconnect(false);   // we manage retries ourselves via tick()
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_SSID, AP_PASSWORD);
   delay(500);
   Serial.printf("[WiFi] AP started: %s | IP: %s\n",
     AP_SSID, WiFi.softAPIP().toString().c_str());
 
-  // Let tick() handle the first connection attempt after a short stabilisation delay.
-  // WiFi.mode() resets the internal stack; attempting WiFi.begin() too quickly after
-  // softAP() causes the first scan to fail. tick() will connect after ~3s.
   String ssid, pass;
   if (loadCredentials(ssid, pass)) {
-    _lastRetryTime = millis() - WIFI_RETRY_INTERVAL_MS + 3000;  // first attempt in ~3s
-    Serial.printf("[WiFi] Will connect to '%s' in ~3s...\n", ssid.c_str());
+    Serial.printf("[WiFi] Connecting to '%s'...\n", ssid.c_str());
+    _connecting = true;
+    WiFi.begin(ssid.c_str(), pass.c_str());
   }
 }
 
-// ── Tick — non-blocking state machine ────────────────────────────────────
+// ── Tick ──────────────────────────────────────────────────────────────────
 
 inline void tick() {
-  // Restore AP only if it actually dropped — NEVER call WiFi.mode() here:
-  // calling it resets the STA stack even when already in AP_STA mode.
+  // Restore softAP if it dropped (can happen briefly after STA associates)
   if (WiFi.softAPIP()[0] == 0) {
     Serial.println("[WiFi] AP dropped, restoring...");
     WiFi.softAP(AP_SSID, AP_PASSWORD);
   }
 
-  // ── CONNECTED ──
-  if (_staState == StaState::CONNECTED) {
-    if (WiFi.status() != WL_CONNECTED) {
-      // Debounce: require 5 consecutive failures (~500ms) before declaring lost
-      if (++_lostCount >= 5) {
-        _lostCount = 0;
-        _retryCount = 0;  // fresh attempts after each disconnect
-        _staState = StaState::IDLE;
-        _lastRetryTime = millis();
-        Serial.println("[WiFi] STA disconnected");
-      }
-    } else {
-      _lostCount = 0;
-    }
-    return;
-  }
+  // Constant 15s retry — skip in LOCAL mode or while already connecting
+  if (_online || _connecting || Mode::isLocal()) return;
+  if (!_credsCached || _cachedSsid.length() == 0) return;
+  if ((millis() - _lastRetryTime) < 25000u) return;
 
-  // ── CONNECTING ──
-  if (_staState == StaState::CONNECTING) {
-    if (WiFi.status() == WL_CONNECTED) {
-      _retryCount = 0;
-      _staState = StaState::CONNECTED;
-      if (WiFi.softAPIP()[0] == 0) {
-        WiFi.softAP(AP_SSID, AP_PASSWORD);
-      }
-      Serial.printf("[WiFi] STA connected — IP: %s\n", WiFi.localIP().toString().c_str());
-      Serial.printf("[WiFi] AP active — IP: %s\n", WiFi.softAPIP().toString().c_str());
-    } else if ((millis() - _connectStart) >= WIFI_CONNECT_TIMEOUT_MS) {
-      WiFi.disconnect(false);
-      _retryCount++;
-      _lastRetryTime = millis();
-      _staState = StaState::IDLE;
-      Serial.printf("[WiFi] STA timed out (attempt %d/%d)\n", _retryCount, WIFI_MAX_RETRIES);
-    }
-    return;
-  }
-
-  // ── IDLE: schedule next retry ──
-  if (Mode::isLocal()) return;
-  if (_retryCount >= WIFI_MAX_RETRIES) return;
-
-  if ((millis() - _lastRetryTime) >= WIFI_RETRY_INTERVAL_MS) {
-    String ssid, pass;
-    if (!loadCredentials(ssid, pass)) return;
-    Serial.printf("[WiFi] Connecting to '%s' (attempt %d/%d)...\n",
-      ssid.c_str(), _retryCount + 1, WIFI_MAX_RETRIES);
-    WiFi.begin(ssid.c_str(), pass.c_str());
-    _connectStart = millis();
-    _staState = StaState::CONNECTING;
-  }
+  Serial.printf("[WiFi] Retrying '%s'...\n", _cachedSsid.c_str());
+  _connecting = true;
+  WiFi.begin(_cachedSsid.c_str(), _cachedPass.c_str());
 }
 
-// ── Accesseurs ────────────────────────────────────────────────────────────
+// ── Accessors ─────────────────────────────────────────────────────────────
 
-inline bool isOnline()    { return _staState == StaState::CONNECTED; }
-inline String localIP()   { return WiFi.localIP().toString(); }
-inline String apIP()      { return WiFi.softAPIP().toString(); }
-inline String getSSID()   { return WiFi.status() == WL_CONNECTED ? WiFi.SSID() : ""; }
-inline int32_t getRSSI()  { return WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0; }
+inline bool     isOnline()     { return _online; }
+inline bool     isConnecting() { return _connecting; }
+inline String   localIP()      { return WiFi.localIP().toString(); }
+inline String   apIP()         { return WiFi.softAPIP().toString(); }
+inline String   getSSID()      { return _online ? WiFi.SSID() : ""; }
+inline int32_t  getRSSI()      { return _online ? WiFi.RSSI() : 0; }
 
+// Called after new credentials are submitted via the portal
 inline void resetRetryCount() {
-  _retryCount = 0;
-  _lostCount = 0;
+  if (!_credsCached || _cachedSsid.length() == 0) return;
   _lastRetryTime = 0;
-  // Abort any in-progress connection so tick() starts fresh immediately
-  if (_staState == StaState::CONNECTING) {
-    WiFi.disconnect(false);
-    _staState = StaState::IDLE;
-  }
-  Serial.println("[WiFi] Retry counter reset");
+  _online = false; _connecting = true;
+  WiFi.begin(_cachedSsid.c_str(), _cachedPass.c_str());
+  Serial.println("[WiFi] Reconnecting with saved credentials...");
 }
 
 } // namespace WiFiMgr

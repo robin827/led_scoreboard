@@ -39,7 +39,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .scoreboard{background:#251f40;border-radius:20px;padding:28px 20px 20px;margin-bottom:16px;box-shadow:0 8px 40px rgba(0,0,0,0.4)}
 .scores{display:flex;justify-content:space-around;align-items:center;margin-bottom:16px;position:relative}
 .team{text-align:center}
-.team-label{font-size:0.65rem;letter-spacing:2px;text-transform:uppercase;color:#8070a8;margin-bottom:10px}
+.team-label{font-size:0.65rem;letter-spacing:2px;text-transform:uppercase;color:#8070a8;margin-bottom:10px;cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none;position:relative}
+.team-label:active{opacity:0.6}
 .set-badge{position:absolute;top:50%;transform:translateY(-50%);background:#3a3460;border-radius:6px;padding:3px 8px;font-size:0.7rem;font-weight:700;min-width:24px;text-align:center}
 .set-badge-a{color:#f5c518;border:1px solid rgba(245,197,24,0.35);right:calc(50% + 16px)}
 .set-badge-b{color:#e83e8c;border:1px solid rgba(232,62,140,0.35);left:calc(50% + 16px)}
@@ -69,8 +70,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .setting-group:last-child{margin-bottom:0}
 .setting-label{font-size:0.68rem;letter-spacing:1px;text-transform:uppercase;color:#8070a8;margin-bottom:10px;display:flex;align-items:center;gap:6px}
 .mode-selector{display:flex;gap:8px}
-.mode-btn{flex:1;padding:12px;border:none;border-radius:8px;background:#3a3460;color:#8070a8;font-size:0.85rem;font-weight:600;cursor:pointer;transition:all .2s}
+.mode-btn{flex:1;padding:10px 8px;border:none;border-radius:8px;background:#3a3460;color:#8070a8;font-size:0.85rem;font-weight:600;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:3px}
 .mode-btn.active{background:#f5c518;color:#1c1830}
+.mode-sub{font-size:0.6rem;font-weight:400;opacity:0.65;letter-spacing:0;text-transform:none;line-height:1.2;text-align:center}
+.mode-btn.active .mode-sub{opacity:0.7}
 .mode-hint{font-size:0.75rem;color:#8070a8;margin-top:10px;line-height:1.5;padding:8px 10px;background:#1c1830;border-radius:8px;border-left:2px solid #3a3460}
 .input{width:100%;background:#3a3460;border:1px solid #4a4478;border-radius:8px;color:#fff;padding:12px;font-size:0.9rem;outline:none}
 .input:focus{border-color:#f5c518}
@@ -97,13 +100,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .status-online{background:rgba(245,197,24,0.15);color:#f5c518;border:1px solid rgba(245,197,24,0.35)}
 .status-offline{background:rgba(128,112,168,0.15);color:#8070a8;border:1px solid rgba(128,112,168,0.25)}
 .status-connecting{background:rgba(232,62,140,0.15);color:#e83e8c;border:1px solid rgba(232,62,140,0.35)}
+.score-wrap{position:relative;display:flex;align-items:center;justify-content:center}
+.serve-col{position:absolute;display:flex;flex-direction:column;justify-content:center;gap:5px;width:7px;height:52px}
+.serve-col-a{left:-14px}.serve-col-b{right:-14px}
+.serve-dot{width:7px;height:7px;border-radius:50%;transition:opacity .3s}
+.serve-dot-a{background:#f5c518}.serve-dot-b{background:#e83e8c}
+.serve-dot-dim{opacity:0.2}
+.srv-hint{position:absolute;top:-6px;left:calc(50% + 30px);font-size:0.5rem;padding:1px 3px;border-radius:3px;letter-spacing:0;text-transform:none;font-weight:700;background:#3a3460;color:#8070a8;opacity:0.35;transition:all .2s;white-space:nowrap}
+.lbl-a.first-srv .srv-hint{opacity:1;background:rgba(245,197,24,0.18);color:#f5c518}
+.lbl-b.first-srv .srv-hint{opacity:1;background:rgba(232,62,140,0.18);color:#e83e8c}
 .wifi-indicator{align-items:center;gap:5px;font-size:0.72rem;color:#f5c518;margin-top:6px;justify-content:center}
 </style>
 </head>
 <body>
 <div class="container">
   <div class="header">
-    <div class="logo">Roundnet Scoreboard <span id="pulse" class="pulse"></span></div>
+    <div class="logo">Roundnet Scoreboard</div>
     <div id="wifiIndicator" class="wifi-indicator" style="display:none"><svg width="13" height="10" viewBox="0 0 13 10" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><circle cx="6.5" cy="8.5" r="1.2"/><path d="M4 5.8C4.7 5 5.6 4.6 6.5 4.6S8.3 5 9 5.8" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/><path d="M1.5 3C2.9 1.5 4.6.7 6.5.7S10.1 1.5 11.5 3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/></svg><span id="wifiIndicatorSSID"></span></div>
   </div>
 
@@ -112,13 +124,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <div class="set-badge set-badge-a" id="setA">0</div>
       <div class="set-badge set-badge-b" id="setB">0</div>
       <div class="team">
-        <div class="team-label">Team A</div>
-        <div class="score score-a" id="scoreA">00</div>
+        <div class="team-label lbl-a first-srv" id="lblA" onclick="setFirstServer(0)">Team A<span class="srv-hint">1st</span></div>
+        <div class="score-wrap">
+          <div class="serve-col serve-col-a" id="serveA"></div>
+          <div class="score score-a" id="scoreA">00</div>
+        </div>
       </div>
       <div class="divider"></div>
       <div class="team">
-        <div class="team-label">Team B</div>
-        <div class="score score-b" id="scoreB">00</div>
+        <div class="team-label lbl-b" id="lblB" onclick="setFirstServer(1)">Team B<span class="srv-hint">1st</span></div>
+        <div class="score-wrap">
+          <div class="score score-b" id="scoreB">00</div>
+          <div class="serve-col serve-col-b" id="serveB"></div>
+        </div>
       </div>
     </div>
 
@@ -149,9 +167,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div class="setting-group">
       <label class="setting-label">Mode</label>
       <div class="mode-selector">
-        <button class="mode-btn" id="modeLocal" onclick="setMode(0)">Local</button>
-        <button class="mode-btn" id="modeRead" onclick="setMode(1)">Read</button>
-        <button class="mode-btn" id="modeWrite" onclick="setMode(2)">Write</button>
+        <button class="mode-btn" id="modeLocal" onclick="setMode(0)">Local<span class="mode-sub">standalone</span></button>
+        <button class="mode-btn" id="modeRead" onclick="setMode(1)">Read<span class="mode-sub">cloud&nbsp;→&nbsp;board</span></button>
+        <button class="mode-btn" id="modeWrite" onclick="setMode(2)">Write<span class="mode-sub">board&nbsp;→&nbsp;cloud</span></button>
       </div>
       <div class="mode-hint" id="modeHint" style="display:none"></div>
     </div>
@@ -226,6 +244,20 @@ async function refresh() {
     document.getElementById('ratioA').style.flex = total > 0 ? d.scoreA : 1;
     document.getElementById('ratioB').style.flex = total > 0 ? d.scoreB : 1;
 
+    const mkDot = (cls) => { const e = document.createElement('div'); e.className = 'serve-dot ' + cls; return e; };
+    const sa = document.getElementById('serveA'); sa.innerHTML = '';
+    const sb = document.getElementById('serveB'); sb.innerHTML = '';
+    const dotCls = d.serving === 0 ? 'serve-dot-a' : 'serve-dot-b';
+    const serveCol = d.serving === 0 ? sa : sb;
+    if (d.serveTotal === 2) {
+      serveCol.appendChild(mkDot(dotCls + (d.servesLeft < 2 ? ' serve-dot-dim' : '')));
+      serveCol.appendChild(mkDot(dotCls));
+    } else {
+      serveCol.appendChild(mkDot(dotCls));
+    }
+    document.getElementById('lblA').className = 'team-label lbl-a' + (d.firstServer === 0 ? ' first-srv' : '');
+    document.getElementById('lblB').className = 'team-label lbl-b' + (d.firstServer === 1 ? ' first-srv' : '');
+
     currentMode = d.mode;
     document.getElementById('modeLocal').classList.toggle('active', d.mode === 0);
     document.getElementById('modeRead').classList.toggle('active', d.mode === 1);
@@ -240,11 +272,14 @@ async function refresh() {
     const wifiLink = ' <a href="#" onclick="document.getElementById(\'wifiGroup\').scrollIntoView({behavior:\'smooth\'});return false" style="color:#f5c518;text-decoration:none;font-weight:600">Connect below \u2193</a>';
     if (d.mode === 1) {
       hint.style.display = 'block';
-      hint.innerHTML = 'Read mode: scores are pulled from Firebase. A WiFi connection is required.' + (!d.online ? wifiLink : '');
+      hint.innerHTML = 'Read mode: scores are pulled from the cloud. A WiFi connection is required.' + (!d.online ? wifiLink : '');
     } else if (d.mode === 2) {
       hint.style.display = 'block';
-      hint.innerHTML = 'Write mode: scores are pushed to Firebase. Still works offline, syncs when connected.' + (!d.online ? wifiLink : '');
-    } else { hint.style.display = 'none'; }
+      hint.innerHTML = 'Write mode: scores are pushed on the cloud. Still works offline, syncs when connected.' + (!d.online ? wifiLink : '');
+    } else if (d.mode === 0) { 
+      hint.style.display = 'block';
+      hint.innerHTML = 'Local mode: this phone communicates with the scoreboard locally. No internet required'; 
+    }
 
     const readMode = d.mode === 1;
     const cs = document.getElementById('controls').style;
@@ -282,14 +317,21 @@ async function refresh() {
       btnDisc.style.display = 'none';
     }
 
-    const p = document.getElementById('pulse');
-    p.classList.remove('live');
-    void p.offsetWidth;
-    p.classList.add('live');
   } catch(e) {}
 }
 
+async function setFirstServer(who) {
+  try { await fetch('/serve/first', {method:'POST', body: String(who)}); refresh(); } catch(e) {}
+}
+
 async function setMode(mode) {
+  // Optimistic update — feel instant regardless of network latency
+  currentMode = mode;
+  document.getElementById('modeLocal').classList.toggle('active', mode === 0);
+  document.getElementById('modeRead').classList.toggle('active', mode === 1);
+  document.getElementById('modeWrite').classList.toggle('active', mode === 2);
+  document.getElementById('channelGroup').style.display = mode !== 0 ? 'block' : 'none';
+  document.getElementById('wifiGroup').style.display = mode !== 0 ? 'block' : 'none';
   try {
     await fetch('/mode', {method:'POST', body: String(mode)});
     await refresh();
@@ -394,6 +436,7 @@ function setBrightness(val) {
 }
 
 setInterval(refresh, 2000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 refresh();
 </script>
 </body>
@@ -416,12 +459,18 @@ inline void init() {
     xSemaphoreTake(scoreMutex, portMAX_DELAY);
     uint8_t sA = currentScore.scoreA, sB = currentScore.scoreB;
     uint8_t sSetA = currentScore.setA, sSetB = currentScore.setB;
+    uint8_t sFirst = currentScore.firstServer;
+    ServeInfo srv = getServeInfo(currentScore);
     xSemaphoreGive(scoreMutex);
     String json = "{";
     json += "\"scoreA\":" + String(sA) + ",";
     json += "\"scoreB\":" + String(sB) + ",";
     json += "\"setA\":" + String(sSetA) + ",";
     json += "\"setB\":" + String(sSetB) + ",";
+    json += "\"firstServer\":" + String(sFirst) + ",";
+    json += "\"serving\":" + String(srv.teamAServing ? 0 : 1) + ",";
+    json += "\"servesLeft\":" + String(srv.servesLeft) + ",";
+    json += "\"serveTotal\":" + String(srv.serveTotal) + ",";
     json += "\"mode\":" + String((int)Mode::get()) + ",";
     json += "\"channel\":\"" + Firebase::getChannel() + "\",";
     json += "\"brightness\":" + String(LED::getBrightness()) + ",";
@@ -470,6 +519,15 @@ inline void init() {
       LED::update(currentScore);
       xSemaphoreGive(scoreMutex);
     }
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/serve/first", HTTP_POST, []() {
+    String body = server->arg("plain");
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    currentScore.firstServer = (body == "1") ? 1 : 0;
+    LED::update(currentScore);
+    xSemaphoreGive(scoreMutex);
     server->send(200, "text/plain", "OK");
   });
 

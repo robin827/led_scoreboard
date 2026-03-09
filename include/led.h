@@ -207,11 +207,27 @@ inline void update(const Score& score) {
   // Team A : 2 pixels à gauche
   if (score.setA > 0) _leds[xy(1, 7)] = colorA;
   if (score.setA > 1) _leds[xy(2, 7)] = colorA;
-  
+
   // Team B : 2 pixels à droite
   if (score.setB > 0) _leds[xy(21, 7)] = colorB;
   if (score.setB > 1) _leds[xy(22, 7)] = colorB;
-  
+
+  // Serve indicator — column 0 (Team A side) or column 23 (Team B side)
+  // 2-serve rotation: always 2 dots at rows 2 & 5; used dot dims when on 2nd serve
+  // 1-serve only (first serve / deuce): single dot at row 3
+  {
+    ServeInfo srv = getServeInfo(score);
+    int sc = srv.teamAServing ? 0 : 23;
+    CRGB bright = srv.teamAServing ? colorA : colorB;
+    CRGB dim = bright; dim.nscale8(45);  // ~18% brightness for used serve
+    if (srv.serveTotal == 2) {
+      _leds[xy(sc, 2)] = (srv.servesLeft == 2) ? bright : dim;
+      _leds[xy(sc, 5)] = bright;
+    } else {
+      _leds[xy(sc, 3)] = bright;
+    }
+  }
+
   FastLED.show();
 }
 
