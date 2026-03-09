@@ -51,7 +51,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .ratio-bar{display:flex;height:4px;border-radius:2px;overflow:hidden;margin-bottom:20px;gap:2px}
 .ratio-a{background:#f5c518;border-radius:2px;transition:flex .4s;flex:1}
 .ratio-b{background:#e83e8c;border-radius:2px;transition:flex .4s;flex:1}
-.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;transition:opacity .2s}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
 .btn{border:none;border-radius:12px;padding:16px;font-size:1rem;font-weight:600;cursor:pointer;transition:transform .1s,opacity .1s;background:#3a3460;color:#fff;-webkit-tap-highlight-color:transparent;user-select:none;touch-action:manipulation}
 .btn:active{transform:scale(0.96)}
 .btn.flash{opacity:0.4;transform:scale(0.93)}
@@ -60,7 +60,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .btn-secondary-a{background:rgba(245,197,24,0.15);color:#f5c518;border:1px solid rgba(245,197,24,0.3)}
 .btn-secondary-b{background:rgba(232,62,140,0.15);color:#e83e8c;border:1px solid rgba(232,62,140,0.3)}
 .btn-repeat{touch-action:none}
-.actions{display:flex;flex-direction:column;gap:10px;padding-top:16px;border-top:1px solid #3a3460;transition:opacity .2s}
+.actions{display:flex;flex-direction:column;gap:10px;padding-top:16px;border-top:1px solid #3a3460}
 .actions .btn{font-size:0.85rem;background:#3a3460;color:#8070a8}
 .btn-hold{position:relative;overflow:hidden;touch-action:none}
 .btn-hold::after{content:'';position:absolute;left:0;top:0;height:100%;width:0;background:rgba(255,255,255,0.1);border-radius:12px}
@@ -93,8 +93,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .net-pass{flex:1;background:#251f40;border:1px solid #4a4478;border-radius:6px;color:#fff;padding:8px 10px;font-size:0.85rem;outline:none}
 .net-pass:focus{border-color:#f5c518}
 .net-connect{padding:8px 14px;background:#f5c518;color:#1c1830;border:none;border-radius:6px;font-size:0.85rem;font-weight:600;cursor:pointer;white-space:nowrap}
-.btn-scan{width:100%;margin-top:8px;padding:12px;background:#3a3460;color:#8070a8;font-size:0.85rem;border-radius:12px}
-.btn-scan:disabled{opacity:0.45;cursor:default}
+.btn-scan{width:100%;margin-top:8px;padding:12px;background:#3a3460;color:#8070a8;font-size:0.85rem;border-radius:12px;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn-scan:disabled{opacity:0.7;cursor:default}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:14px;height:14px;border:2px solid rgba(128,112,168,0.3);border-top-color:#8070a8;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
 .btn-disconnect{width:100%;margin-top:8px;padding:10px;background:rgba(232,62,140,0.1);color:#e83e8c;border:1px solid rgba(232,62,140,0.3);border-radius:8px;font-size:0.8rem;font-weight:600;cursor:pointer}
 .status-badge{padding:3px 8px;border-radius:6px;font-size:0.7rem;font-weight:600;text-transform:none;letter-spacing:0}
 .status-online{background:rgba(245,197,24,0.15);color:#f5c518;border:1px solid rgba(245,197,24,0.35)}
@@ -192,8 +194,25 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 let currentMode = 0;
 let _online = false;
 let _isConnecting = false;
+let _switching = false;
 let _repeatTimer = null, _repeatStart = null;
 let _holdTimer = null, _holdBtn = null;
+
+function applyModeUI(mode, online) {
+  document.getElementById('modeLocal').classList.toggle('active', mode === 0);
+  document.getElementById('modeRead').classList.toggle('active', mode === 1);
+  document.getElementById('modeWrite').classList.toggle('active', mode === 2);
+  document.getElementById('channelGroup').style.display = mode !== 0 ? 'block' : 'none';
+  document.getElementById('wifiGroup').style.display = mode !== 0 ? 'block' : 'none';
+  const hint = document.getElementById('modeHint');
+  const wifiLink = ' <a href="#" onclick="document.getElementById(\'wifiGroup\').scrollIntoView({behavior:\'smooth\'});return false" style="color:#f5c518;text-decoration:none;font-weight:600">Connect below \u2193</a>';
+  hint.style.display = 'block';
+  if (mode === 1) hint.innerHTML = 'Read mode: scores are pulled from the cloud. A WiFi connection is required.' + (!online ? wifiLink : '');
+  else if (mode === 2) hint.innerHTML = 'Write mode: scores are pushed on the cloud. Still works offline, syncs when connected.' + (!online ? wifiLink : '');
+  else hint.innerHTML = 'Local mode: this phone communicates with the scoreboard locally. No internet required';
+  const readMode = mode === 1;
+  document.getElementById('controls').style.display = document.getElementById('actions').style.display = readMode ? 'none' : '';
+}
 
 async function action(url, btn) {
   if (currentMode === 1) return;
@@ -258,40 +277,18 @@ async function refresh() {
     document.getElementById('lblA').className = 'team-label lbl-a' + (d.firstServer === 0 ? ' first-srv' : '');
     document.getElementById('lblB').className = 'team-label lbl-b' + (d.firstServer === 1 ? ' first-srv' : '');
 
-    currentMode = d.mode;
-    document.getElementById('modeLocal').classList.toggle('active', d.mode === 0);
-    document.getElementById('modeRead').classList.toggle('active', d.mode === 1);
-    document.getElementById('modeWrite').classList.toggle('active', d.mode === 2);
-
-    document.getElementById('channelGroup').style.display = d.mode !== 0 ? 'block' : 'none';
-    document.getElementById('wifiGroup').style.display = d.mode !== 0 ? 'block' : 'none';
-
     _online = d.online;
 
-    const hint = document.getElementById('modeHint');
-    const wifiLink = ' <a href="#" onclick="document.getElementById(\'wifiGroup\').scrollIntoView({behavior:\'smooth\'});return false" style="color:#f5c518;text-decoration:none;font-weight:600">Connect below \u2193</a>';
-    if (d.mode === 1) {
-      hint.style.display = 'block';
-      hint.innerHTML = 'Read mode: scores are pulled from the cloud. A WiFi connection is required.' + (!d.online ? wifiLink : '');
-    } else if (d.mode === 2) {
-      hint.style.display = 'block';
-      hint.innerHTML = 'Write mode: scores are pushed on the cloud. Still works offline, syncs when connected.' + (!d.online ? wifiLink : '');
-    } else if (d.mode === 0) { 
-      hint.style.display = 'block';
-      hint.innerHTML = 'Local mode: this phone communicates with the scoreboard locally. No internet required'; 
+    if (!_switching) {
+      currentMode = d.mode;
+      applyModeUI(d.mode, d.online);
     }
-
-    const readMode = d.mode === 1;
-    const cs = document.getElementById('controls').style;
-    const as = document.getElementById('actions').style;
-    cs.opacity = as.opacity = readMode ? '0.3' : '1';
-    cs.pointerEvents = as.pointerEvents = readMode ? 'none' : '';
 
     if (d.channel) document.getElementById('channel').value = d.channel;
 
     if (d.brightness !== undefined && !_brightnessDirty) {
       document.getElementById('brightness').value = d.brightness;
-      document.getElementById('brightVal').textContent = Math.round(d.brightness / 255 * 100);
+      document.getElementById('brightVal').textContent = Math.max(1, Math.round(d.brightness / 255 * 100));
     }
 
     const indicator = document.getElementById('wifiIndicator');
@@ -325,21 +322,17 @@ async function setFirstServer(who) {
 }
 
 async function setMode(mode) {
-  // Optimistic update — feel instant regardless of network latency
+  _switching = true;
   currentMode = mode;
-  document.getElementById('modeLocal').classList.toggle('active', mode === 0);
-  document.getElementById('modeRead').classList.toggle('active', mode === 1);
-  document.getElementById('modeWrite').classList.toggle('active', mode === 2);
-  document.getElementById('channelGroup').style.display = mode !== 0 ? 'block' : 'none';
-  document.getElementById('wifiGroup').style.display = mode !== 0 ? 'block' : 'none';
+  applyModeUI(mode, _online);
   try {
     await fetch('/mode', {method:'POST', body: String(mode)});
-    await refresh();
-    if (mode !== 0 && !_online) {
-      document.getElementById('wifiGroup').scrollIntoView({behavior:'smooth'});
-      scanWiFi();
-    }
   } catch(e) {}
+  finally { _switching = false; }
+  await refresh();
+  if (mode !== 0 && !_online) {
+    document.getElementById('wifiGroup').scrollIntoView({behavior:'smooth'});
+  }
 }
 
 async function saveChannel() {
@@ -349,7 +342,7 @@ async function saveChannel() {
 async function scanWiFi() {
   const btn = document.getElementById('btnScan');
   btn.disabled = true;
-  btn.textContent = 'Scanning\u2026';
+  btn.innerHTML = '<div class="spinner"></div>Scanning\u2026';
   try {
     const r = await fetch('/wifi/scan');
     const nets = await r.json();
@@ -392,7 +385,7 @@ async function scanWiFi() {
     list.style.display = nets.length ? 'block' : 'none';
   } catch(e) {}
   btn.disabled = false;
-  btn.textContent = 'Scan Networks';
+  btn.innerHTML = 'Scan Networks';
 }
 
 function toggleForm(item) {
@@ -426,7 +419,7 @@ function disconnectWiFi() {
 let _brightnessTimer = null;
 let _brightnessDirty = false;
 function setBrightness(val) {
-  document.getElementById('brightVal').textContent = Math.round(val / 255 * 100);
+  document.getElementById('brightVal').textContent = Math.max(1, Math.round(val / 255 * 100));
   _brightnessDirty = true;
   clearTimeout(_brightnessTimer);
   _brightnessTimer = setTimeout(async () => {
