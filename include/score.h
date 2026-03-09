@@ -20,16 +20,18 @@ struct Score {
   void decrementA() { if (scoreA > 0) scoreA--; }
   void decrementB() { if (scoreB > 0) scoreB--; }
 
-  void nextSet() {
+  bool nextSet() {
+    if (scoreA == scoreB) return false;
     uint8_t idx = setA + setB;  // 0-based index of the set just finished
     if (idx < 3) {
       histA[idx] = scoreA;
       histB[idx] = scoreB;
     }
     if (scoreA > scoreB) setA++;
-    else if (scoreB > scoreA) setB++;
+    else setB++;
     scoreA = 0;
     scoreB = 0;
+    return true;
   }
 
   void reset() {

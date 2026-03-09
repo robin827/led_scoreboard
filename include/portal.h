@@ -36,7 +36,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .pulse{width:6px;height:6px;border-radius:50%;background:#3a3460;flex-shrink:0;transition:background .3s}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.15}}
 .pulse.live{animation:blink .5s 1;background:#f5c518}
-.scoreboard{background:#251f40;border-radius:20px;padding:28px 20px 20px;margin-bottom:16px;box-shadow:0 8px 40px rgba(0,0,0,0.4)}
+.scoreboard{background:#251f40;border-radius:20px;padding:28px 20px 20px;margin-bottom:16px;box-shadow:0 8px 40px rgba(0,0,0,0.4);position:relative}
 .scores{display:flex;justify-content:space-around;align-items:center;margin-bottom:16px;position:relative}
 .team{text-align:center}
 .team-label{font-size:0.65rem;letter-spacing:2px;text-transform:uppercase;color:#8070a8;margin-bottom:10px;cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none;position:relative}
@@ -112,6 +112,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .lbl-a.first-srv .srv-hint{opacity:1;background:rgba(245,197,24,0.18);color:#f5c518}
 .lbl-b.first-srv .srv-hint{opacity:1;background:rgba(232,62,140,0.18);color:#e83e8c}
 .wifi-indicator{align-items:center;gap:5px;font-size:0.72rem;color:#f5c518;margin-top:6px;justify-content:center}
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,-50%) scale(0.9)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
+.toast{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#3a3460;color:#e83e8c;border:1px solid rgba(232,62,140,0.35);border-radius:10px;padding:10px 18px;font-size:0.82rem;font-weight:600;white-space:nowrap;pointer-events:none;animation:toastIn .2s ease;z-index:999}
 </style>
 </head>
 <body>
@@ -191,6 +193,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </div>
 
 <script>
+let _toastTimer = null;
+function showToast(msg) {
+  if (_toastTimer) { clearTimeout(_toastTimer); document.querySelector('.toast')?.remove(); }
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  document.querySelector('.scoreboard').appendChild(t);
+  _toastTimer = setTimeout(() => { t.remove(); _toastTimer = null; }, 2500);
+}
+
 let currentMode = 0;
 let _online = false;
 let _isConnecting = false;
@@ -217,7 +229,11 @@ function applyModeUI(mode, online) {
 async function action(url, btn) {
   if (currentMode === 1) return;
   if (btn) { btn.classList.add('flash'); setTimeout(() => btn.classList.remove('flash'), 150); }
-  try { await fetch(url, {method:'POST'}); refresh(); } catch(e) {}
+  try {
+    const r = await fetch(url, {method:'POST'});
+    if (r.status === 409) { showToast('Teams are even — no winner yet'); return; }
+    refresh();
+  } catch(e) {}
 }
 
 function startRepeat(url, btn) {
@@ -527,9 +543,10 @@ inline void init() {
   server->on("/nextset", HTTP_POST, []() {
     if (!Mode::isRead()) {
       xSemaphoreTake(scoreMutex, portMAX_DELAY);
-      currentScore.nextSet();
-      LED::update(currentScore);
+      bool ok = currentScore.nextSet();
+      if (ok) LED::update(currentScore);
       xSemaphoreGive(scoreMutex);
+      if (!ok) { server->send(409, "text/plain", "TIED"); return; }
     }
     server->send(200, "text/plain", "OK");
   });
