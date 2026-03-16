@@ -137,6 +137,26 @@ inline bool readScore(Score& score) {
   score.scoreA = payload.substring(idxA + 15).toInt();
   score.scoreB = payload.substring(idxB + 15).toInt();
 
+  // Parse game_settings.win_points (may be string "21" or number 21)
+  int idxWP = payload.indexOf("\"win_points\":");
+  if (idxWP >= 0) {
+    int valStart = idxWP + 13;
+    while (valStart < (int)payload.length() && (payload[valStart] == ' ' || payload[valStart] == '"')) valStart++;
+    int wp = payload.substring(valStart).toInt();
+    if (wp >= 5 && wp <= 99) score.winPoints = wp;
+  }
+
+  // Parse starting_server: "a"/"b" → Team A (firstServer=0), "c"/"d" → Team B (firstServer=1)
+  int idxSS = payload.indexOf("\"starting_server\":", searchStart);
+  if (idxSS >= 0) {
+    int q1 = payload.indexOf('"', idxSS + 18) + 1;
+    int q2 = payload.indexOf('"', q1);
+    if (q1 > 0 && q2 > q1) {
+      String sv = payload.substring(q1, q2);
+      score.firstServer = (sv == "a" || sv == "b") ? 0 : 1;
+    }
+  }
+
   // Compte les sets gagnés
   score.setA = 0;
   score.setB = 0;
@@ -181,7 +201,7 @@ inline bool writeScore(const Score& score) {
   if (localIP[0] == 0) return false;
 
   HTTPClient http;
-  http.setTimeout(10000);
+  http.setTimeout(5000);
   http.setReuse(false);
 
   String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + ".json";
@@ -222,6 +242,70 @@ inline bool writeScore(const Score& score) {
 
   Serial.printf("[Firebase] Write OK: A=%d B=%d (set %d, code %d)\n",
     score.scoreA, score.scoreB, activeSet, code);
+  return code == 200;
+}
+
+// ── Write starting_server for the active set ──────────────────────────────────
+// firstServer=0 (Team A) → "a",  firstServer=1 (Team B) → "c"
+
+inline bool writeFirstServer(const Score& score) {
+  String channel = getChannel();
+  if (channel.isEmpty()) return false;
+  if (!WiFi.isConnected()) return false;
+  IPAddress localIP = WiFi.localIP();
+  if (localIP[0] == 0) return false;
+
+  int activeSet = score.setA + score.setB + 1;
+  String setPath = String(FIREBASE_DATABASE_URL)
+    + "/match-" + channel + "/score/set_" + String(activeSet);
+  String serverVal  = (score.firstServer == 0) ? "\"a\"" : "\"c\"";
+  String receiverVal = (score.firstServer == 0) ? "\"c\"" : "\"a\"";
+
+  // Write starting_server
+  HTTPClient http;
+  http.setTimeout(5000);
+  http.setReuse(false);
+  if (!http.begin(*_getClient(), setPath + "/starting_server.json")) { _resetClient(); return false; }
+  http.addHeader("Content-Type", "application/json");
+  int code = http.PUT(serverVal);
+  http.end();
+  if (code < 0) { _resetClient(); return false; }
+
+  // Write starting_receiver
+  if (!http.begin(*_getClient(), setPath + "/starting_receiver.json")) { _resetClient(); return false; }
+  http.addHeader("Content-Type", "application/json");
+  code = http.PUT(receiverVal);
+  http.end();
+  if (code < 0) { _resetClient(); return false; }
+
+  Serial.printf("[Firebase] writeFirstServer OK: server=%s receiver=%s\n",
+    serverVal.c_str(), receiverVal.c_str());
+  return true;
+}
+
+// ── Write win_points directly to its leaf node (avoids overwriting siblings) ──
+
+inline bool writeWinPoints(uint8_t winPoints) {
+  String channel = getChannel();
+  if (channel.isEmpty()) return false;
+  if (!WiFi.isConnected()) return false;
+  IPAddress localIP = WiFi.localIP();
+  if (localIP[0] == 0) return false;
+
+  HTTPClient http;
+  http.setTimeout(5000);
+  http.setReuse(false);
+
+  String url = String(FIREBASE_DATABASE_URL)
+    + "/match-" + channel + "/game_settings/win_points.json";
+
+  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
+  http.addHeader("Content-Type", "application/json");
+  int code = http.PUT(String(winPoints));
+  http.end();
+
+  if (code < 0) { _resetClient(); return false; }
+  Serial.printf("[Firebase] writeWinPoints OK: %d (code %d)\n", winPoints, code);
   return code == 200;
 }
 

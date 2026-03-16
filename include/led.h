@@ -215,11 +215,11 @@ inline void update(const Score& score) {
   // Serve indicator — column 0 (Team A side) or column 23 (Team B side)
   // 2-serve rotation: always 2 dots at rows 2 & 5; used dot dims when on 2nd serve
   // 1-serve only (first serve / deuce): single dot at row 3
-  {
+  if (!isSetWon(score)) {
     ServeInfo srv = getServeInfo(score);
     int sc = srv.teamAServing ? 0 : 23;
     CRGB bright = srv.teamAServing ? colorA : colorB;
-    CRGB dim = bright; dim.nscale8(45);  // ~18% brightness for used serve
+    CRGB dim = bright; dim.nscale8(100);  // ~40% brightness for used serve
     if (srv.serveTotal == 2) {
       _leds[xy(sc, 2)] = (srv.servesLeft == 2) ? bright : dim;
       _leds[xy(sc, 5)] = bright;

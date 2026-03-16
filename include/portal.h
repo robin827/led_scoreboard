@@ -77,6 +77,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .mode-hint{font-size:0.75rem;color:#8070a8;margin-top:10px;line-height:1.5;padding:8px 10px;background:#1c1830;border-radius:8px;border-left:2px solid #3a3460}
 .input{width:100%;background:#3a3460;border:1px solid #4a4478;border-radius:8px;color:#fff;padding:12px;font-size:0.9rem;outline:none}
 .input:focus{border-color:#f5c518}
+select.input{appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238070a8' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+select.input option{background:#3a3460}
 .slider{width:100%;height:28px;border-radius:14px;background:linear-gradient(to right,#3a3460 0%,#f5c518 100%);outline:none;-webkit-appearance:none;appearance:none;cursor:pointer;margin-bottom:6px}
 .slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:22px;height:22px;border-radius:50%;background:#f5c518;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,0.5)}
 .slider::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#f5c518;cursor:pointer;border:none;box-shadow:0 2px 10px rgba(0,0,0,0.5)}
@@ -107,7 +109,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .serve-col-a{left:-14px}.serve-col-b{right:-14px}
 .serve-dot{width:7px;height:7px;border-radius:50%;transition:opacity .3s}
 .serve-dot-a{background:#f5c518}.serve-dot-b{background:#e83e8c}
-.serve-dot-dim{opacity:0.2}
+.serve-dot-dim{opacity:0.35}
 .srv-hint{position:absolute;top:-6px;left:calc(50% + 30px);font-size:0.5rem;padding:1px 3px;border-radius:3px;letter-spacing:0;text-transform:none;font-weight:700;background:#3a3460;color:#8070a8;opacity:0.35;transition:all .2s;white-space:nowrap}
 .lbl-a.first-srv .srv-hint{opacity:1;background:rgba(245,197,24,0.18);color:#f5c518}
 .lbl-b.first-srv .srv-hint{opacity:1;background:rgba(232,62,140,0.18);color:#e83e8c}
@@ -169,6 +171,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   <div class="settings">
     <div class="setting-group">
+      <label class="setting-label">Win Score</label>
+      <input type="number" class="input" id="winPoints" min="5" max="99" step="1" value="21" onfocus="_winPointsDirty=true" oninput="saveWinPoints()" onblur="saveWinPoints(true)">
+      <div style="font-size:0.7rem;color:#8070a8;margin-top:6px;line-height:1.4">A team wins when reaching this score with a 2-point lead. From <span id="deuceHint">20</span>–<span id="deuceHint2">21</span> onward: 1 serve each.</div>
+    </div>
+  </div>
+
+  <div class="settings">
+    <div class="setting-group">
       <label class="setting-label">Mode</label>
       <div class="mode-selector">
         <button class="mode-btn" id="modeLocal" onclick="setMode(0)">Local<span class="mode-sub">standalone</span></button>
@@ -180,7 +190,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
     <div class="setting-group" id="channelGroup" style="display:none">
       <label class="setting-label">Channel (Match ID)</label>
-      <input type="text" class="input" id="channel" placeholder="ex: match-15" onchange="saveChannel()">
+      <select class="input" id="channel" onchange="saveChannel()">
+        <option value="">— Select channel —</option>
+        <option value="1">Match 1</option><option value="2">Match 2</option><option value="3">Match 3</option><option value="4">Match 4</option><option value="5">Match 5</option><option value="6">Match 6</option><option value="7">Match 7</option><option value="8">Match 8</option><option value="9">Match 9</option><option value="10">Match 10</option><option value="11">Match 11</option><option value="12">Match 12</option><option value="13">Match 13</option><option value="14">Match 14</option><option value="15">Match 15</option><option value="16">Match 16</option><option value="17">Match 17</option><option value="18">Match 18</option><option value="19">Match 19</option><option value="20">Match 20</option>
+      </select>
     </div>
 
     <div class="setting-group" id="wifiGroup" style="display:none">
@@ -224,6 +237,10 @@ function applyModeUI(mode, online) {
   else hint.innerHTML = 'Local mode: this phone communicates with the scoreboard locally. No internet required';
   const readMode = mode === 1;
   document.getElementById('controls').style.display = document.getElementById('actions').style.display = readMode ? 'none' : '';
+  document.querySelectorAll('.team-label').forEach(el => el.style.cursor = readMode ? 'default' : 'pointer');
+  const wpEl = document.getElementById('winPoints');
+  wpEl.disabled = readMode;
+  wpEl.style.opacity = readMode ? '0.5' : '1';
 }
 
 async function action(url, btn) {
@@ -282,13 +299,16 @@ async function refresh() {
     const mkDot = (cls) => { const e = document.createElement('div'); e.className = 'serve-dot ' + cls; return e; };
     const sa = document.getElementById('serveA'); sa.innerHTML = '';
     const sb = document.getElementById('serveB'); sb.innerHTML = '';
-    const dotCls = d.serving === 0 ? 'serve-dot-a' : 'serve-dot-b';
-    const serveCol = d.serving === 0 ? sa : sb;
-    if (d.serveTotal === 2) {
-      serveCol.appendChild(mkDot(dotCls + (d.servesLeft < 2 ? ' serve-dot-dim' : '')));
-      serveCol.appendChild(mkDot(dotCls));
-    } else {
-      serveCol.appendChild(mkDot(dotCls));
+    const setWon = Math.max(d.scoreA, d.scoreB) >= d.winPoints && Math.abs(d.scoreA - d.scoreB) >= 2;
+    if (!setWon) {
+      const dotCls = d.serving === 0 ? 'serve-dot-a' : 'serve-dot-b';
+      const serveCol = d.serving === 0 ? sa : sb;
+      if (d.serveTotal === 2) {
+        serveCol.appendChild(mkDot(dotCls + (d.servesLeft < 2 ? ' serve-dot-dim' : '')));
+        serveCol.appendChild(mkDot(dotCls));
+      } else {
+        serveCol.appendChild(mkDot(dotCls));
+      }
     }
     document.getElementById('lblA').className = 'team-label lbl-a' + (d.firstServer === 0 ? ' first-srv' : '');
     document.getElementById('lblB').className = 'team-label lbl-b' + (d.firstServer === 1 ? ' first-srv' : '');
@@ -301,6 +321,11 @@ async function refresh() {
     }
 
     if (d.channel) document.getElementById('channel').value = d.channel;
+    if (d.winPoints && !_winPointsDirty) {
+      document.getElementById('winPoints').value = d.winPoints;
+      document.getElementById('deuceHint').textContent = d.winPoints - 1;
+      document.getElementById('deuceHint2').textContent = d.winPoints;
+    }
 
     if (d.brightness !== undefined && !_brightnessDirty) {
       document.getElementById('brightness').value = d.brightness;
@@ -333,7 +358,21 @@ async function refresh() {
   } catch(e) {}
 }
 
+function saveWinPoints(immediate = false) {
+  const wp = parseInt(document.getElementById('winPoints').value);
+  if (wp >= 5 && wp <= 99) {
+    document.getElementById('deuceHint').textContent = wp - 1;
+    document.getElementById('deuceHint2').textContent = wp;
+    clearTimeout(_winPointsTimer);
+    _winPointsTimer = setTimeout(async () => {
+      try { await fetch('/winpoints', {method:'POST', body: String(wp)}); } catch(e) {}
+      _winPointsDirty = false;
+    }, immediate ? 0 : 600);
+  }
+}
+
 async function setFirstServer(who) {
+  if (currentMode === 1) return;
   try { await fetch('/serve/first', {method:'POST', body: String(who)}); refresh(); } catch(e) {}
 }
 
@@ -434,6 +473,8 @@ function disconnectWiFi() {
 
 let _brightnessTimer = null;
 let _brightnessDirty = false;
+let _winPointsTimer = null;
+let _winPointsDirty = false;
 function setBrightness(val) {
   document.getElementById('brightVal').textContent = Math.max(1, Math.round(val / 255 * 100));
   _brightnessDirty = true;
@@ -480,6 +521,7 @@ inline void init() {
     json += "\"serving\":" + String(srv.teamAServing ? 0 : 1) + ",";
     json += "\"servesLeft\":" + String(srv.servesLeft) + ",";
     json += "\"serveTotal\":" + String(srv.serveTotal) + ",";
+    json += "\"winPoints\":" + String(currentScore.winPoints) + ",";
     json += "\"mode\":" + String((int)Mode::get()) + ",";
     json += "\"channel\":\"" + Firebase::getChannel() + "\",";
     json += "\"brightness\":" + String(LED::getBrightness()) + ",";
@@ -537,6 +579,19 @@ inline void init() {
     currentScore.firstServer = (body == "1") ? 1 : 0;
     LED::update(currentScore);
     xSemaphoreGive(scoreMutex);
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/winpoints", HTTP_POST, []() {
+    if (server->hasArg("plain")) {
+      int wp = server->arg("plain").toInt();
+      if (wp >= 5 && wp <= 99) {
+        xSemaphoreTake(scoreMutex, portMAX_DELAY);
+        currentScore.winPoints = wp;
+        LED::update(currentScore);
+        xSemaphoreGive(scoreMutex);
+      }
+    }
     server->send(200, "text/plain", "OK");
   });
 

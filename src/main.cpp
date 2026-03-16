@@ -44,15 +44,17 @@ void firebaseTask(void* parameter) {
         
         Serial.printf("[Firebase] Free heap before: %d\n", ESP.getFreeHeap());
         
-        Score newScore;
+        Score newScore = currentScore;
         if (Firebase::readScore(newScore)) {
           consecutiveErrors = 0;  // Reset sur succès
           currentInterval = READ_INTERVAL_SUCCESS;
           
-          if (newScore.scoreA != currentScore.scoreA ||
-              newScore.scoreB != currentScore.scoreB ||
-              newScore.setA != currentScore.setA ||
-              newScore.setB != currentScore.setB) {
+          if (newScore.scoreA      != currentScore.scoreA   ||
+              newScore.scoreB      != currentScore.scoreB   ||
+              newScore.setA        != currentScore.setA     ||
+              newScore.setB        != currentScore.setB     ||
+              newScore.firstServer != currentScore.firstServer ||
+              newScore.winPoints   != currentScore.winPoints) {
             xSemaphoreTake(scoreMutex, portMAX_DELAY);
             currentScore = newScore;
             LED::update(currentScore);
@@ -68,8 +70,10 @@ void firebaseTask(void* parameter) {
         Serial.printf("[Firebase] Free heap after: %d\n", ESP.getFreeHeap());
       }
     } else if (Mode::isWrite() && WiFiMgr::isOnline()) {
-      // Write mode: push score to Firebase whenever it changes
-      static Score lastWritten;
+      // Write mode: push score and win_points to Firebase whenever they change
+      static Score   lastWritten;
+      static uint8_t lastWrittenWP  = 255;  // force first write
+      static uint8_t lastWrittenFS  = 255;  // force first write
       xSemaphoreTake(scoreMutex, portMAX_DELAY);
       Score toWrite = currentScore;
       xSemaphoreGive(scoreMutex);
@@ -80,6 +84,18 @@ void firebaseTask(void* parameter) {
           toWrite.setB   != lastWritten.setB) {
         if (Firebase::writeScore(toWrite)) {
           lastWritten = toWrite;
+        }
+      }
+
+      if (toWrite.winPoints != lastWrittenWP) {
+        if (Firebase::writeWinPoints(toWrite.winPoints)) {
+          lastWrittenWP = toWrite.winPoints;
+        }
+      }
+
+      if (toWrite.firstServer != lastWrittenFS) {
+        if (Firebase::writeFirstServer(toWrite)) {
+          lastWrittenFS = toWrite.firstServer;
         }
       }
     } else {

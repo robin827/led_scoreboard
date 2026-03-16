@@ -11,6 +11,7 @@ struct Score {
   uint8_t setA   = 0;
   uint8_t setB   = 0;
   uint8_t firstServer = 0;  // 0 = Team A serves first, 1 = Team B serves first
+  uint8_t winPoints   = 21; // Points needed to win a set (deuce kicks in at winPoints-1)
   // Final scores of completed sets (for Firebase WRITE mode)
   uint8_t histA[3] = {0, 0, 0};
   uint8_t histB[3] = {0, 0, 0};
@@ -55,23 +56,26 @@ struct ServeInfo {
 //   - First serve of the game: firstServer team gets 1 serve
 //   - Then teams alternate in groups of 2
 //   - Deuce (both >= TARGET-1): 1 serve each, alternating
+inline bool isSetWon(const Score& score) {
+  uint8_t hi = score.scoreA >= score.scoreB ? score.scoreA : score.scoreB;
+  uint8_t lo = score.scoreA >= score.scoreB ? score.scoreB : score.scoreA;
+  return hi >= score.winPoints && (hi - lo) >= 2;
+}
+
 inline ServeInfo getServeInfo(const Score& score) {
-  static const uint8_t TARGET = 21;
+  const uint8_t TARGET = score.winPoints;
   uint8_t total = score.scoreA + score.scoreB;
   bool firstIsA = (score.firstServer == 0);
 
-  // Deuce: both at TARGET-1 or beyond — 1 serve each
-  if (score.scoreA >= TARGET - 1 && score.scoreB >= TARGET - 1) {
-    uint8_t deuceStart = (uint8_t)((TARGET - 1) * 2);
+  // Deuce: one team first reaches TARGET while other is 1 point behind (diff <= 1)
+  uint8_t hi = score.scoreA >= score.scoreB ? score.scoreA : score.scoreB;
+  uint8_t lo = score.scoreA >= score.scoreB ? score.scoreB : score.scoreA;
+  if (hi >= TARGET && hi - lo <= 1) {
+    // Deuce starts at total = 2*TARGET - 1 (e.g. 21-20 = 41 with TARGET 21)
+    uint8_t deuceStart = (uint8_t)(2 * TARGET - 1);
     uint8_t deucePoints = total - deuceStart;
-    // Who serves at the start of deuce? Continue the normal rotation
-    bool firstAtDeuce;
-    if (deuceStart == 0) {
-      firstAtDeuce = firstIsA;
-    } else {
-      uint8_t group = (uint8_t)((deuceStart - 1) / 2);
-      firstAtDeuce = (group % 2 == 0) ? !firstIsA : firstIsA;
-    }
+    uint8_t dg = (uint8_t)((deuceStart - 1) / 2);
+    bool firstAtDeuce = (dg % 2 == 0) ? !firstIsA : firstIsA;
     return {(deucePoints % 2 == 0) ? firstAtDeuce : !firstAtDeuce, 1, 1};
   }
 
