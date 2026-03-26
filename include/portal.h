@@ -163,6 +163,16 @@ select.input option{background:#3a3460}
 
   <div class="settings">
     <div class="setting-group">
+      <label class="setting-label">LED Matrix</label>
+      <div class="mode-selector">
+        <button class="mode-btn" id="mat0" onclick="setMatrixSize(0)">24 × 8<span class="mode-sub">small</span></button>
+        <button class="mode-btn" id="mat1" onclick="setMatrixSize(1)">32 × 16<span class="mode-sub">large</span></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="settings">
+    <div class="setting-group">
       <label class="setting-label">Brightness</label>
       <input type="range" id="brightness" class="slider" min="1" max="255" value="80" oninput="setBrightness(this.value)">
       <div class="slider-value"><span id="brightVal">31</span>%</div>
@@ -313,6 +323,9 @@ async function refresh() {
     document.getElementById('lblA').className = 'team-label lbl-a' + (d.firstServer === 0 ? ' first-srv' : '');
     document.getElementById('lblB').className = 'team-label lbl-b' + (d.firstServer === 1 ? ' first-srv' : '');
 
+    document.getElementById('mat0').classList.toggle('active', !d.matrixLarge);
+    document.getElementById('mat1').classList.toggle('active',  d.matrixLarge);
+
     _online = d.online;
 
     if (!_switching) {
@@ -369,6 +382,12 @@ function saveWinPoints(immediate = false) {
       _winPointsDirty = false;
     }, immediate ? 0 : 600);
   }
+}
+
+async function setMatrixSize(v) {
+  document.getElementById('mat0').classList.toggle('active', v === 0);
+  document.getElementById('mat1').classList.toggle('active', v === 1);
+  try { await fetch('/matrix', {method:'POST', body: String(v)}); refresh(); } catch(e) {}
 }
 
 async function setFirstServer(who) {
@@ -525,6 +544,7 @@ inline void init() {
     json += "\"mode\":" + String((int)Mode::get()) + ",";
     json += "\"channel\":\"" + Firebase::getChannel() + "\",";
     json += "\"brightness\":" + String(LED::getBrightness()) + ",";
+    json += "\"matrixLarge\":" + String(LED::isMatrixLarge() ? "true" : "false") + ",";
     json += "\"online\":" + String(WiFiMgr::isOnline() ? "true" : "false") + ",";
     json += "\"ssid\":\"" + WiFiMgr::getSSID() + "\",";
     json += "\"rssi\":" + String(WiFiMgr::getRSSI());
@@ -616,6 +636,18 @@ inline void init() {
     server->send(200, "text/plain", "OK");
   });
   
+  // Matrix size
+  server->on("/matrix", HTTP_POST, []() {
+    if (server->hasArg("plain")) {
+      bool large = (server->arg("plain") == "1");
+      LED::setMatrix(large);
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      LED::update(currentScore);
+      xSemaphoreGive(scoreMutex);
+    }
+    server->send(200, "text/plain", "OK");
+  });
+
   // Mode
   server->on("/mode", HTTP_POST, []() {
     if (server->hasArg("plain")) {
@@ -720,6 +752,7 @@ inline void init() {
 inline void tick() {
   dns.processNextRequest();
   server->handleClient();
+  LED::tick();
 }
 
 } // namespace Portal
