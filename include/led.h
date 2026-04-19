@@ -16,26 +16,38 @@ static CRGB        _leds[512];
 static bool        _matrixLarge = false;
 static Preferences _prefs;
 
-// ─── Small matrix (24×8) ─────────────────────────────────────────────────────
-// Zigzag vertical, starts bottom-right. Even cols (from right): bottom→top.
+// ─── Small matrix (24×12 extended) ───────────────────────────────────────────
+// Original 24×8 panel: column-major zigzag, bottom-right origin (LEDs 0–191).
+// Extension: single 24×4 panel (row-major horizontal snake, top-left origin).
+//   y=8  x=0→23   LEDs 192–215
+//   y=9  x=23→0   LEDs 216–239
+//   y=10 x=0→23   LEDs 240–263
+//   y=11 x=23→0   LEDs 264–287
 
 inline int xy(int x, int y) {
-  int col = (Config::NUM_COLS - 1) - x;
-  int row = (col % 2 == 0) ? (Config::NUM_ROWS - 1) - y : y;
-  return col * Config::NUM_ROWS + row;
+  if (y < Config::NUM_ROWS) {
+    int col = (Config::NUM_COLS - 1) - x;
+    int row = (col % 2 == 0) ? (Config::NUM_ROWS - 1) - y : y;
+    return col * Config::NUM_ROWS + row;
+  }
+  // Extension: column-major zigzag, top-left origin (same logic as main panel, no x-flip)
+  // Even cols (from left): top→bottom. Odd cols: bottom→top.
+  int r = y - Config::NUM_ROWS;       // 0..3 within extension
+  int led = (x % 2 == 0) ? x * 4 + r : x * 4 + (3 - r);
+  return 192 + led;
 }
 
 static const uint8_t DIGITS[10][7][4] = {
-  {{0,1,1,0},{1,0,0,1},{1,0,0,1},{1,0,0,1},{1,0,0,1},{1,0,0,1},{0,1,1,0}}, // 0
-  {{0,0,1,0},{0,1,1,0},{0,0,1,0},{0,0,1,0},{0,0,1,0},{0,0,1,0},{0,1,1,1}}, // 1
-  {{0,1,1,0},{1,0,0,1},{0,0,0,1},{0,0,1,0},{0,1,0,0},{1,0,0,0},{1,1,1,1}}, // 2
-  {{0,1,1,0},{1,0,0,1},{0,0,0,1},{0,1,1,0},{0,0,0,1},{1,0,0,1},{0,1,1,0}}, // 3
-  {{0,0,1,0},{0,1,1,0},{1,0,1,0},{1,0,1,0},{1,1,1,1},{0,0,1,0},{0,0,1,0}}, // 4
-  {{1,1,1,1},{1,0,0,0},{1,1,1,0},{0,0,0,1},{0,0,0,1},{1,0,0,1},{0,1,1,0}}, // 5
-  {{0,1,1,0},{1,0,0,0},{1,0,0,0},{1,1,1,0},{1,0,0,1},{1,0,0,1},{0,1,1,0}}, // 6
-  {{1,1,1,1},{0,0,0,1},{0,0,1,0},{0,0,1,0},{0,1,0,0},{0,1,0,0},{0,1,0,0}}, // 7
-  {{0,1,1,0},{1,0,0,1},{1,0,0,1},{0,1,1,0},{1,0,0,1},{1,0,0,1},{0,1,1,0}}, // 8
-  {{0,1,1,0},{1,0,0,1},{1,0,0,1},{0,1,1,1},{0,0,0,1},{0,0,0,1},{0,1,1,0}}  // 9
+  {{0,1,1,0},{1,0,0,1},{1,0,0,1},{1,0,0,1},{1,0,0,1},{1,0,0,1},{0,1,1,0}}, // 0  — drop one side row
+  {{0,0,1,0},{0,1,1,0},{0,0,1,0},{0,0,1,0},{0,0,1,0},{0,0,1,0},{0,1,1,1}}, // 1  — drop one middle stroke row
+  {{0,1,1,0},{1,0,0,1},{0,0,0,1},{0,0,1,0},{0,1,0,0},{1,0,0,0},{1,1,1,1}}, // 2  — drop X... row (least structural)
+  {{0,1,1,0},{1,0,0,1},{0,0,0,1},{0,1,1,0},{0,0,0,1},{1,0,0,1},{0,1,1,0}}, // 3  — drop right-side row, middle bar at row 2
+  {{0,0,1,0},{0,1,1,0},{1,0,1,0},{1,0,1,0},{1,1,1,1},{0,0,1,0},{0,0,1,0}}, // 4  — drop one X·X· row
+  {{1,1,1,1},{1,0,0,0},{1,0,0,0},{1,1,1,0},{0,0,0,1},{1,0,0,1},{0,1,1,0}}, // 5  — drop one ···X row
+  {{0,1,1,0},{1,0,0,0},{1,0,0,0},{1,1,1,0},{1,0,0,1},{1,0,0,1},{0,1,1,0}}, // 6  — drop one X··· row
+  {{1,1,1,1},{0,0,0,1},{0,0,0,1},{0,0,1,0},{0,1,0,0},{0,1,0,0},{0,1,0,0}}, // 7  — drop one diagonal step
+  {{0,1,1,0},{1,0,0,1},{1,0,0,1},{0,1,1,0},{1,0,0,1},{1,0,0,1},{0,1,1,0}}, // 8  — drop one side row from top half
+  {{0,1,1,0},{1,0,0,1},{1,0,0,1},{0,1,1,1},{0,0,0,1},{0,0,0,1},{0,1,1,0}}  // 9  — drop one side row from top loop
 };
 
 inline void drawDigit(int d, int sx, int sy, CRGB col) {
@@ -160,6 +172,24 @@ inline void drawDigitSmall(int d, int sx, int sy, CRGB col) {
   }
 }
 
+// Same 3×4 glyphs rendered onto the small matrix (uses xy, not xyLarge)
+template<size_t N>
+inline void _drawSm(const int8_t (&c)[N][2], int sx, int sy, CRGB col) {
+  for (size_t i = 0; i < N; i++) {
+    int x = c[i][0] + sx, y = c[i][1] + sy;
+    if (x >= 0 && x < Config::NUM_COLS && y >= 0 && y < Config::NUM_ROWS + 4)
+      _leds[xy(x, y)] = col;
+  }
+}
+
+inline void drawSetDigitSm(int d, int sx, int sy, CRGB col) {
+  switch (constrain(d, 0, 2)) {
+    case 0: _drawSm(_SD0, sx, sy, col); break;
+    case 1: _drawSm(_SD1, sx, sy, col); break;
+    case 2: _drawSm(_SD2, sx, sy, col); break;
+  }
+}
+
 inline void drawDigitLarge(int d, int sx, int sy, CRGB col) {
   switch (d) {
     case 0: _drawLarge(_LD0, sx, sy, col); break;
@@ -180,10 +210,9 @@ inline void drawDigitLarge(int d, int sx, int sy, CRGB col) {
 static Score    _animScore;
 static uint32_t _lastTick = 0;
 
-// Returns a brightness multiplier (70–255) that oscillates ~once per 2 s
+// Returns a brightness multiplier (0–255) that oscillates ~once per 1.3 s, reaching full off
 inline uint8_t _breatheFactor() {
-  // sin8(x) returns 0-255; we map it to 70-255 so the LED never goes fully dark
-  return (uint8_t)(20 + scale8(sin8((uint8_t)(millis() / 8)), 185));
+  return sin8((uint8_t)(millis() / 5));
 }
 
 // ─── Serve pixel helpers (called with optional breathe scale) ────────────────
@@ -197,12 +226,15 @@ inline void _applyServeSmall(const Score& score, uint8_t breathe) {
   CRGB bright = srv.teamAServing ? colorA : colorB;
   bright.nscale8(breathe);
   CRGB dim = srv.teamAServing ? colorA : colorB; dim.nscale8(100);
-  if (srv.serveTotal == 2) {
-    _leds[xy(sc, 2)] = (srv.servesLeft == 2) ? bright : dim;
-    _leds[xy(sc, 5)] = bright;
-  } else {
-    _leds[xy(sc, 3)] = bright;
-  }
+  // Top block (y=0-2): bright when both serves remain, dim when first used, off for deuce
+  CRGB topColor = (srv.serveTotal == 2) ? ((srv.servesLeft == 2) ? bright : dim) : CRGB::Black;
+  _leds[xy(sc, 0)] = topColor;
+  _leds[xy(sc, 1)] = topColor;
+  _leds[xy(sc, 2)] = topColor;
+  // Bottom block (y=5-7): always bright for current server
+  _leds[xy(sc, 5)] = bright;
+  _leds[xy(sc, 6)] = bright;
+  _leds[xy(sc, 7)] = bright;
 }
 
 inline void _applyServeLarge(const Score& score, uint8_t breathe) {
@@ -235,10 +267,10 @@ inline void _updateSmall(const Score& score, uint8_t breathe) {
   drawDigit(score.scoreB / 10, 13, 0, colorB);
   drawDigit(score.scoreB % 10, 18, 0, colorB);
 
-  if (score.setA > 0) _leds[xy(1, 7)] = colorA;
-  if (score.setA > 1) _leds[xy(2, 7)] = colorA;
-  if (score.setB > 0) _leds[xy(21, 7)] = colorB;
-  if (score.setB > 1) _leds[xy(22, 7)] = colorB;
+  // Set scores: 3×4 digit glyphs in the extension rows (y=8..11)
+  // x=2 (Team A) and x=19 (Team B) give 2-pixel margins from each serve column
+  drawSetDigitSm(score.setA, 5,  Config::NUM_ROWS, colorA);
+  drawSetDigitSm(score.setB, 16, Config::NUM_ROWS, colorB);
 
   _applyServeSmall(score, breathe);
 }
