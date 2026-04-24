@@ -12,6 +12,7 @@
 #include "mode.h"
 #include "wifi_mgr.h"
 #include "firebase.h"
+#include "score_actions.h"
 #include <ArduinoJson.h>
 
 namespace Portal {
@@ -213,6 +214,7 @@ select.input option{background:#3a3460}
       <button class="btn-disconnect" id="btnDisconnect" style="display:none" onclick="disconnectWiFi()">Disconnect from <span id="connectedSSID"></span></button>
     </div>
   </div>
+  <div style="text-align:center;margin-top:20px;font-size:0.62rem;color:#3a3460;letter-spacing:1px" id="macAddr"></div>
 </div>
 
 <script>
@@ -339,6 +341,8 @@ async function refresh() {
       document.getElementById('deuceHint').textContent = d.winPoints - 1;
       document.getElementById('deuceHint2').textContent = d.winPoints;
     }
+
+    if (d.mac) { const el = document.getElementById('macAddr'); if (el && !el.textContent) el.textContent = d.mac; }
 
     if (d.brightness !== undefined && !_brightnessDirty) {
       document.getElementById('brightness').value = d.brightness;
@@ -547,51 +551,22 @@ inline void init() {
     json += "\"matrixLarge\":" + String(LED::isMatrixLarge() ? "true" : "false") + ",";
     json += "\"online\":" + String(WiFiMgr::isOnline() ? "true" : "false") + ",";
     json += "\"ssid\":\"" + WiFiMgr::getSSID() + "\",";
-    json += "\"rssi\":" + String(WiFiMgr::getRSSI());
+    json += "\"rssi\":" + String(WiFiMgr::getRSSI()) + ",";
+    json += "\"mac\":\"" + WiFi.macAddress() + "\"";
     json += "}";
     server->send(200, "application/json", json);
   });
   
   // Actions score (modes LOCAL et WRITE)
-  server->on("/a/inc", HTTP_POST, []() {
-    if (!Mode::isRead()) {
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
-      currentScore.incrementA();
-      LED::update(currentScore);
-      xSemaphoreGive(scoreMutex);
-    }
+  server->on("/a/inc",   HTTP_POST, []() { ScoreActions::apply("a/inc");   server->send(200, "text/plain", "OK"); });
+  server->on("/a/dec",   HTTP_POST, []() { ScoreActions::apply("a/dec");   server->send(200, "text/plain", "OK"); });
+  server->on("/b/inc",   HTTP_POST, []() { ScoreActions::apply("b/inc");   server->send(200, "text/plain", "OK"); });
+  server->on("/b/dec",   HTTP_POST, []() { ScoreActions::apply("b/dec");   server->send(200, "text/plain", "OK"); });
+  server->on("/nextset", HTTP_POST, []() {
+    if (!ScoreActions::apply("nextset")) { server->send(409, "text/plain", "TIED"); return; }
     server->send(200, "text/plain", "OK");
   });
-
-  server->on("/a/dec", HTTP_POST, []() {
-    if (!Mode::isRead()) {
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
-      currentScore.decrementA();
-      LED::update(currentScore);
-      xSemaphoreGive(scoreMutex);
-    }
-    server->send(200, "text/plain", "OK");
-  });
-
-  server->on("/b/inc", HTTP_POST, []() {
-    if (!Mode::isRead()) {
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
-      currentScore.incrementB();
-      LED::update(currentScore);
-      xSemaphoreGive(scoreMutex);
-    }
-    server->send(200, "text/plain", "OK");
-  });
-
-  server->on("/b/dec", HTTP_POST, []() {
-    if (!Mode::isRead()) {
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
-      currentScore.decrementB();
-      LED::update(currentScore);
-      xSemaphoreGive(scoreMutex);
-    }
-    server->send(200, "text/plain", "OK");
-  });
+  server->on("/reset",   HTTP_POST, []() { ScoreActions::apply("reset");   server->send(200, "text/plain", "OK"); });
 
   server->on("/serve/first", HTTP_POST, []() {
     String body = server->arg("plain");
@@ -611,27 +586,6 @@ inline void init() {
         LED::update(currentScore);
         xSemaphoreGive(scoreMutex);
       }
-    }
-    server->send(200, "text/plain", "OK");
-  });
-
-  server->on("/nextset", HTTP_POST, []() {
-    if (!Mode::isRead()) {
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
-      bool ok = currentScore.nextSet();
-      if (ok) LED::update(currentScore);
-      xSemaphoreGive(scoreMutex);
-      if (!ok) { server->send(409, "text/plain", "TIED"); return; }
-    }
-    server->send(200, "text/plain", "OK");
-  });
-
-  server->on("/reset", HTTP_POST, []() {
-    if (!Mode::isRead()) {
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
-      currentScore.reset();
-      LED::update(currentScore);
-      xSemaphoreGive(scoreMutex);
     }
     server->send(200, "text/plain", "OK");
   });
