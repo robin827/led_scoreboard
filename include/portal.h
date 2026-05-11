@@ -117,6 +117,24 @@ select.input option{background:#3a3460}
 .wifi-indicator{align-items:center;gap:5px;font-size:0.72rem;color:#f5c518;margin-top:6px;justify-content:center}
 @keyframes toastIn{from{opacity:0;transform:translate(-50%,-50%) scale(0.9)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
 .toast{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#3a3460;color:#e83e8c;border:1px solid rgba(232,62,140,0.35);border-radius:10px;padding:10px 18px;font-size:0.82rem;font-weight:600;white-space:nowrap;pointer-events:none;animation:toastIn .2s ease;z-index:999}
+.set-history{display:flex;justify-content:center;gap:8px;margin-bottom:16px}
+.set-chip{display:flex;align-items:center;gap:5px;background:#1c1830;border-radius:8px;padding:5px 11px;font-size:0.78rem;font-variant-numeric:tabular-nums}
+.set-chip-lbl{font-size:0.5rem;letter-spacing:1px;text-transform:uppercase;color:#4a4478;margin-right:2px}
+.set-chip-score{font-weight:700;color:#4a4478}
+.set-chip-score.win-a{color:#f5c518}
+.set-chip-score.win-b{color:#e83e8c}
+.set-chip-sep{color:#3a3460;margin:0 1px}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.72);display:flex;align-items:center;justify-content:center;z-index:1000;opacity:0;pointer-events:none;transition:opacity .2s}
+.modal-overlay.open{opacity:1;pointer-events:all}
+.modal{background:#251f40;border-radius:20px;padding:28px 24px;width:calc(100% - 48px);max-width:320px;transform:scale(0.9);transition:transform .2s;box-shadow:0 20px 60px rgba(0,0,0,0.6)}
+.modal-overlay.open .modal{transform:scale(1)}
+.modal-title{font-size:1rem;font-weight:700;margin-bottom:8px}
+.modal-desc{font-size:0.82rem;color:#8070a8;margin-bottom:24px;line-height:1.5}
+.modal-btns{display:flex;gap:10px}
+.modal-cancel{flex:1;padding:12px;background:#3a3460;color:#8070a8;border:none;border-radius:10px;font-size:0.9rem;font-weight:600;cursor:pointer}
+.modal-ok{flex:1;padding:12px;border:none;border-radius:10px;font-size:0.9rem;font-weight:600;cursor:pointer}
+.modal-ok-yellow{background:#f5c518;color:#1c1830}
+.modal-ok-red{background:#e83e8c;color:#fff}
 </style>
 </head>
 <body>
@@ -147,6 +165,7 @@ select.input option{background:#3a3460}
       </div>
     </div>
 
+    <div class="set-history" id="setHistory" style="display:none"></div>
     <div class="ratio-bar"><div class="ratio-a" id="ratioA"></div><div class="ratio-b" id="ratioB"></div></div>
 
     <div class="controls" id="controls">
@@ -157,8 +176,8 @@ select.input option{background:#3a3460}
     </div>
 
     <div class="actions" id="actions">
-      <button class="btn btn-hold" onpointerdown="startHold(this,'/nextset')" onpointerup="cancelHold()" onpointerleave="cancelHold()">Hold: Next Set</button>
-      <button class="btn btn-hold" onpointerdown="startHold(this,'/reset')" onpointerup="cancelHold()" onpointerleave="cancelHold()">Hold: Reset</button>
+      <button class="btn" onclick="openModal('Next Set','Confirm the current set is over and start the next one.','modal-ok-yellow','/nextset')">Next Set</button>
+      <button class="btn" onclick="openModal('Reset Score','Reset all scores and sets. This cannot be undone.','modal-ok-red','/reset')">Reset</button>
     </div>
   </div>
 
@@ -217,6 +236,17 @@ select.input option{background:#3a3460}
   <div style="text-align:center;margin-top:20px;font-size:0.62rem;color:#3a3460;letter-spacing:1px" id="macAddr"></div>
 </div>
 
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-title" id="modalTitle"></div>
+    <div class="modal-desc" id="modalDesc"></div>
+    <div class="modal-btns">
+      <button class="modal-cancel" onclick="closeModal()">Cancel</button>
+      <button class="modal-ok" id="modalOk" onclick="confirmModal()">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let _toastTimer = null;
 function showToast(msg) {
@@ -233,7 +263,26 @@ let _online = false;
 let _isConnecting = false;
 let _switching = false;
 let _repeatTimer = null, _repeatStart = null;
-let _holdTimer = null, _holdBtn = null;
+let _pendingAction = null;
+
+function openModal(title, desc, okClass, url) {
+  _pendingAction = url;
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalDesc').textContent = desc;
+  const ok = document.getElementById('modalOk');
+  ok.className = 'modal-ok ' + okClass;
+  ok.textContent = title;
+  document.getElementById('modalOverlay').classList.add('open');
+}
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('open');
+  _pendingAction = null;
+}
+async function confirmModal() {
+  const url = _pendingAction;
+  closeModal();
+  if (url) await action(url);
+}
 
 function applyModeUI(mode, online) {
   document.getElementById('modeLocal').classList.toggle('active', mode === 0);
@@ -343,6 +392,24 @@ async function refresh() {
     }
 
     if (d.mac) { const el = document.getElementById('macAddr'); if (el && !el.textContent) el.textContent = d.mac; }
+
+    const hist = document.getElementById('setHistory');
+    if (d.setsPlayed > 0 && d.histA && d.histB) {
+      hist.style.display = 'flex';
+      hist.innerHTML = '';
+      for (let i = 0; i < d.setsPlayed; i++) {
+        const aWon = d.histA[i] > d.histB[i];
+        const chip = document.createElement('div');
+        chip.className = 'set-chip';
+        chip.innerHTML = '<span class="set-chip-lbl">S'+(i+1)+'</span>'
+          +'<span class="set-chip-score'+(aWon?' win-a':'')+'">'+d.histA[i]+'</span>'
+          +'<span class="set-chip-sep">–</span>'
+          +'<span class="set-chip-score'+(!aWon?' win-b':'')+'">'+d.histB[i]+'</span>';
+        hist.appendChild(chip);
+      }
+    } else {
+      hist.style.display = 'none';
+    }
 
     if (d.brightness !== undefined && !_brightnessDirty) {
       document.getElementById('brightness').value = d.brightness;
@@ -533,6 +600,9 @@ inline void init() {
     uint8_t sA = currentScore.scoreA, sB = currentScore.scoreB;
     uint8_t sSetA = currentScore.setA, sSetB = currentScore.setB;
     uint8_t sFirst = currentScore.firstServer;
+    uint8_t sHistA[3], sHistB[3];
+    memcpy(sHistA, currentScore.histA, 3);
+    memcpy(sHistB, currentScore.histB, 3);
     ServeInfo srv = getServeInfo(currentScore);
     xSemaphoreGive(scoreMutex);
     String json = "{";
@@ -552,7 +622,13 @@ inline void init() {
     json += "\"online\":" + String(WiFiMgr::isOnline() ? "true" : "false") + ",";
     json += "\"ssid\":\"" + WiFiMgr::getSSID() + "\",";
     json += "\"rssi\":" + String(WiFiMgr::getRSSI()) + ",";
-    json += "\"mac\":\"" + WiFi.macAddress() + "\"";
+    json += "\"mac\":\"" + WiFi.macAddress() + "\",";
+    json += "\"setsPlayed\":" + String(sSetA + sSetB) + ",";
+    json += "\"histA\":[";
+    for (int i = 0; i < sSetA + sSetB && i < 3; i++) { if (i) json += ","; json += String(sHistA[i]); }
+    json += "],\"histB\":[";
+    for (int i = 0; i < sSetA + sSetB && i < 3; i++) { if (i) json += ","; json += String(sHistB[i]); }
+    json += "]";
     json += "}";
     server->send(200, "application/json", json);
   });

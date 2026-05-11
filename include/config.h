@@ -5,15 +5,15 @@
 #pragma once
 
 // ── WiFi Hotspot ──────────────────────────────────────────────────────────
-#define AP_SSID       "RN-Score"
-#define AP_PASSWORD   "roundnet"
+#define AP_SSID       "Roundnet Scoreboard"
+#define AP_PASSWORD   ""
 
 // ── Firebase Realtime Database ────────────────────────────────────────────
 #define FIREBASE_DATABASE_URL     "https://live-scoreboard-fc0e5-default-rtdb.europe-west1.firebasedatabase.app"
 #define FIREBASE_DATABASE_SECRET  "ta-database-secret"  // Pas utilisé si règles publiques
 
 // ── LED Panel ─────────────────────────────────────────────────────────────
-#define LED_PIN       13
+#define LED_PIN       2
 #define LED_BRIGHTNESS 10
 
 namespace Config {

@@ -10,7 +10,6 @@
 #include "wifi_mgr.h"
 #include "firebase.h"
 #include "portal.h"
-#include "espnow_handler.h"
 
 // Instance globale du score
 Score currentScore;
@@ -127,29 +126,24 @@ void setup() {
   Serial.println("[2/5] Init WiFi...");
   WiFiMgr::init();
 
-  // 3. ESP-NOW (requires WiFi up)
-  Serial.println("[3/5] Init ESP-NOW...");
-  EspNow::init();
-
-  // 4. Portail captif
-  Serial.println("[4/5] Init Portal...");
+  // 3. Portail captif
+  Serial.println("[3/5] Init Portal...");
   Portal::init();
-  
-  // 4. LEDs (already [4/5] — relabel)
-  Serial.println("[5/6] Init LEDs...");
+
+  // 4. LEDs
+  Serial.println("[4/5] Init LEDs...");
   LED::init();
   LED::update(currentScore);
 
-  // 5. Tâche Firebase sur Core 0
-  Serial.println("[6/6] Creating Firebase task on Core 0...");
-  xTaskCreatePinnedToCore(
+  // 5. Tâche Firebase
+  Serial.println("[5/5] Creating Firebase task...");
+  xTaskCreate(
     firebaseTask,         // Fonction
     "FirebaseTask",       // Nom
     8192,                 // Stack size
     NULL,                 // Paramètres
     1,                    // Priorité
-    &firebaseTaskHandle,  // Handle
-    0                     // Core 0
+    &firebaseTaskHandle   // Handle
   );
   
   Serial.println("\n=== READY ===");
@@ -174,4 +168,4 @@ void loop() {
   
   delay(10);
 }
-// Core 0 gère Firebase en parallèle via firebaseTask()
+// firebaseTask() runs in parallel via FreeRTOS

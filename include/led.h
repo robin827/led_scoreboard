@@ -16,6 +16,9 @@ static CRGB        _leds[512];
 static bool        _matrixLarge = false;
 static Preferences _prefs;
 
+static const CRGB COLOR_A = CRGB(255, 100, 0);
+static const CRGB COLOR_B = CRGB::Cyan;
+
 // ─── Small matrix (24×12 extended) ───────────────────────────────────────────
 // Original 24×8 panel: column-major zigzag, bottom-right origin (LEDs 0–191).
 // Extension: single 24×4 panel (row-major horizontal snake, top-left origin).
@@ -144,7 +147,10 @@ static const int8_t _SD0[][2] = {
   {0,3},{1,3},{2,3}
 };
 static const int8_t _SD1[][2] = {
-  {1,0},{1,1},{1,2},{1,3}
+  {1,0},
+  {0,1},{1,1},
+  {1,2},
+  {0,3}, {1,3}, {2,3}
 };
 static const int8_t _SD2[][2] = {
   {0,0},{1,0},{2,0},
@@ -219,58 +225,58 @@ inline uint8_t _breatheFactor() {
 
 inline void _applyServeSmall(const Score& score, uint8_t breathe) {
   if (isSetWon(score)) return;
-  CRGB colorA = CRGB(255, 68, 0);
-  CRGB colorB = CRGB(0, 136, 255);
   ServeInfo srv = getServeInfo(score);
   int sc = srv.teamAServing ? 0 : 23;
-  CRGB bright = srv.teamAServing ? colorA : colorB;
-  bright.nscale8(breathe);
-  CRGB dim = srv.teamAServing ? colorA : colorB; dim.nscale8(100);
-  // Top block (y=0-2): bright when both serves remain, dim when first used, off for deuce
-  CRGB topColor = (srv.serveTotal == 2) ? ((srv.servesLeft == 2) ? bright : dim) : CRGB::Black;
-  _leds[xy(sc, 0)] = topColor;
-  _leds[xy(sc, 1)] = topColor;
-  _leds[xy(sc, 2)] = topColor;
-  // Bottom block (y=5-7): always bright for current server
-  _leds[xy(sc, 5)] = bright;
-  _leds[xy(sc, 6)] = bright;
-  _leds[xy(sc, 7)] = bright;
+  CRGB base = srv.teamAServing ? COLOR_A : COLOR_B;
+  CRGB breathing = base; breathing.nscale8(breathe);
+  if (srv.serveTotal == 2 && srv.servesLeft == 2) {
+    // First serve: top breathes, bottom solid
+    _leds[xy(sc, 0)] = breathing; _leds[xy(sc, 1)] = breathing; _leds[xy(sc, 2)] = breathing;
+    _leds[xy(sc, 5)] = base;      _leds[xy(sc, 6)] = base;      _leds[xy(sc, 7)] = base;
+  } else if (srv.serveTotal == 2 && srv.servesLeft == 1) {
+    // Second serve: top solid, bottom breathes
+    _leds[xy(sc, 0)] = base;      _leds[xy(sc, 1)] = base;      _leds[xy(sc, 2)] = base;
+    _leds[xy(sc, 5)] = breathing; _leds[xy(sc, 6)] = breathing; _leds[xy(sc, 7)] = breathing;
+  } else {
+    // Deuce: bottom breathes only
+    _leds[xy(sc, 5)] = breathing; _leds[xy(sc, 6)] = breathing; _leds[xy(sc, 7)] = breathing;
+  }
 }
 
 inline void _applyServeLarge(const Score& score, uint8_t breathe) {
   if (isSetWon(score)) return;
-  CRGB colorA = CRGB(255, 68, 0);
-  CRGB colorB = CRGB(0, 136, 255);
   ServeInfo srv = getServeInfo(score);
   int sc = srv.teamAServing ? 0 : 31;
-  CRGB bright = srv.teamAServing ? colorA : colorB;
-  bright.nscale8(breathe);
-  CRGB dim = srv.teamAServing ? colorA : colorB; dim.nscale8(100);
-  if (srv.serveTotal == 2) {
-    _leds[xyLarge(sc, 4)]  = (srv.servesLeft == 2) ? bright : dim;
-    _leds[xyLarge(sc, 10)] = bright;
+  CRGB base = srv.teamAServing ? COLOR_A : COLOR_B;
+  CRGB breathing = base; breathing.nscale8(breathe);
+  if (srv.serveTotal == 2 && srv.servesLeft == 2) {
+    // First serve: top breathes, bottom solid
+    _leds[xyLarge(sc, 0)] = breathing; _leds[xyLarge(sc, 1)] = breathing; _leds[xyLarge(sc, 2)] = breathing;
+    _leds[xyLarge(sc, 8)] = base;      _leds[xyLarge(sc, 9)] = base;      _leds[xyLarge(sc, 10)] = base;
+  } else if (srv.serveTotal == 2 && srv.servesLeft == 1) {
+    // Second serve: top solid, bottom breathes
+    _leds[xyLarge(sc, 0)] = base;      _leds[xyLarge(sc, 1)] = base;      _leds[xyLarge(sc, 2)] = base;
+    _leds[xyLarge(sc, 8)]  = breathing; _leds[xyLarge(sc, 9)]  = breathing; _leds[xyLarge(sc, 10)] = breathing;
   } else {
-    _leds[xyLarge(sc, 10)] = bright;
+    // Deuce: bottom breathes only
+    _leds[xyLarge(sc, 8)]  = breathing; _leds[xyLarge(sc, 9)]  = breathing; _leds[xyLarge(sc, 10)] = breathing;
   }
 }
 
 // ─── Render functions ────────────────────────────────────────────────────────
 
 inline void _updateSmall(const Score& score, uint8_t breathe) {
-  CRGB colorA = CRGB(255, 68, 0);
-  CRGB colorB = CRGB(0, 136, 255);
-
   // Digit "1" visual center is 0.5px right of cell center; shift Team A left by 1 to keep display symmetric
   int dAs_t = score.scoreA / 10, dAs_u = score.scoreA % 10;
-  drawDigit(dAs_t, 2 + (dAs_t == 1 ? -1 : 0), 0, colorA);
-  drawDigit(dAs_u, 7 + (dAs_u == 1 ? -1 : 0), 0, colorA);
-  drawDigit(score.scoreB / 10, 13, 0, colorB);
-  drawDigit(score.scoreB % 10, 18, 0, colorB);
+  drawDigit(dAs_t, 2 + (dAs_t == 1 ? -1 : 0), 0, COLOR_A);
+  drawDigit(dAs_u, 7 + (dAs_u == 1 ? -1 : 0), 0, COLOR_A);
+  drawDigit(score.scoreB / 10, 13, 0, COLOR_B);
+  drawDigit(score.scoreB % 10, 18, 0, COLOR_B);
 
   // Set scores: 3×4 digit glyphs in the extension rows (y=8..11)
   // x=2 (Team A) and x=19 (Team B) give 2-pixel margins from each serve column
-  drawSetDigitSm(score.setA, 5,  Config::NUM_ROWS, colorA);
-  drawSetDigitSm(score.setB, 16, Config::NUM_ROWS, colorB);
+  drawSetDigitSm(score.setA, 5,  Config::NUM_ROWS, COLOR_A);
+  drawSetDigitSm(score.setB, 16, Config::NUM_ROWS, COLOR_B);
 
   _applyServeSmall(score, breathe);
 }
@@ -285,9 +291,6 @@ inline void _updateSmall(const Score& score, uint8_t breathe) {
 //  y=2…12     — digits (11 rows, centred in 16)
 //  y=14       — set badges
 inline void _updateLarge(const Score& score, uint8_t breathe) {
-  CRGB colorA = CRGB(255, 68, 0);
-  CRGB colorB = CRGB(0, 136, 255);
-
   // dy=0: digits occupy y=0-10, y=11 is a free gap, set scores at y=12-15
   const int dy = 0;
   // Digits 0 and 1 have visual content at x=1..5 (center x=3) vs x=0..5 (center x=2.5) for other digits.
@@ -295,16 +298,16 @@ inline void _updateLarge(const Score& score, uint8_t breathe) {
   int dAl_t = score.scoreA / 10, dAl_u = score.scoreA % 10;
   auto ATensOff = [](int d) -> int { return (d >= 2) ? 1 : 0; };
   auto AUnitsOff = [](int d) -> int { return (d >= 2) ? 1 : 0; };
-  drawDigitLarge(dAl_t, 1 + ATensOff(dAl_t), dy, colorA);
-  drawDigitLarge(dAl_u, 8+ AUnitsOff(dAl_t), dy, colorA);
+  drawDigitLarge(dAl_t, 1 + ATensOff(dAl_t), dy, COLOR_A);
+  drawDigitLarge(dAl_u, 8+ AUnitsOff(dAl_t), dy, COLOR_A);
   int dBl_t = score.scoreB / 10, dBl_u = score.scoreB % 10;
-  drawDigitLarge(dBl_t, 17, dy, colorB);
-  drawDigitLarge(dBl_u, 24, dy, colorB);
+  drawDigitLarge(dBl_t, 17, dy, COLOR_B);
+  drawDigitLarge(dBl_u, 24, dy, COLOR_B);
 
   // Set scores — 3×4 small digits at bottom (y=12-15)
   // Team A at x=1, Team B at x=28 (clear of serve indicator columns 0 and 31)
-  drawDigitSmall(score.setA, 1,  12, colorA);
-  drawDigitSmall(score.setB, 28, 12, colorB);
+  drawDigitSmall(score.setA, 2,  12, COLOR_A);
+  drawDigitSmall(score.setB, 27, 12, COLOR_B);
 
   _applyServeLarge(score, breathe);
 }
@@ -322,10 +325,9 @@ inline void setMatrix(bool large) {
 }
 
 inline void init() {
-  // Always add 512 LEDs — extra data is harmless for the 24×8 strip
   FastLED.addLeds<WS2812B, Config::PIN, GRB>(_leds, 512);
 
-  _prefs.begin("led", true);
+  _prefs.begin("led", false);
   uint8_t brightness = _prefs.getUChar("brightness", Config::BRIGHTNESS);
   _matrixLarge       = _prefs.getBool("matLarge", false);
   _prefs.end();
