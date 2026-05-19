@@ -18,7 +18,7 @@ static AppMode _current = AppMode::LOCAL;
 static Preferences _prefs;
 
 inline void init() {
-  _prefs.begin("mode", true);
+  _prefs.begin("mode", false);
   _current = (AppMode)_prefs.getUChar("mode", 0);
   _prefs.end();
   const char* names[] = {"LOCAL", "READ", "WRITE"};

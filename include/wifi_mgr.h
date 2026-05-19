@@ -27,7 +27,7 @@ static uint32_t    _lastRetryTime = 0;
 
 inline bool loadCredentials(String& ssid, String& password) {
   if (_credsCached) { ssid = _cachedSsid; password = _cachedPass; return ssid.length() > 0; }
-  _prefs.begin("wifi", true);
+  _prefs.begin("wifi", false);
   if (_prefs.isKey("ssid")) {
     _cachedSsid = _prefs.getString("ssid", "");
     _cachedPass = _prefs.getString("pass", "");

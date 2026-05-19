@@ -122,25 +122,25 @@ void setup() {
   // 1. Mode
   Serial.println("[1/6] Init Mode...");
   Mode::init();
-  
+
   // 2. WiFi (AP + tentative STA)
-  Serial.println("[2/5] Init WiFi...");
+  Serial.println("[2/6] Init WiFi...");
   WiFiMgr::init();
 
   // 3. ESP-NOW (requires WiFi up)
-  Serial.println("[3/5] Init ESP-NOW...");
+  Serial.println("[3/6] Init ESP-NOW...");
   EspNow::init();
 
   // 4. Portail captif
-  Serial.println("[4/5] Init Portal...");
+  Serial.println("[4/6] Init Portal...");
   Portal::init();
-  
-  // 4. LEDs (already [4/5] — relabel)
+
+  // 5. LEDs
   Serial.println("[5/6] Init LEDs...");
   LED::init();
   LED::update(currentScore);
 
-  // 5. Tâche Firebase sur Core 0
+  // 6. Tâche Firebase sur Core 0
   Serial.println("[6/6] Creating Firebase task on Core 0...");
   xTaskCreatePinnedToCore(
     firebaseTask,         // Fonction
