@@ -233,7 +233,6 @@ select.input option{background:#3a3460}
       <button class="btn-disconnect" id="btnDisconnect" style="display:none" onclick="disconnectWiFi()">Disconnect from <span id="connectedSSID"></span></button>
     </div>
   </div>
-  <div style="text-align:center;margin-top:20px;font-size:0.62rem;color:#3a3460;letter-spacing:1px" id="macAddr"></div>
 </div>
 
 <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
@@ -391,7 +390,6 @@ async function refresh() {
       document.getElementById('deuceHint2').textContent = d.winPoints;
     }
 
-    if (d.mac) { const el = document.getElementById('macAddr'); if (el && !el.textContent) el.textContent = d.mac; }
 
     const hist = document.getElementById('setHistory');
     if (d.setsPlayed > 0 && d.histA && d.histB) {
@@ -622,7 +620,6 @@ inline void init() {
     json += "\"online\":" + String(WiFiMgr::isOnline() ? "true" : "false") + ",";
     json += "\"ssid\":\"" + WiFiMgr::getSSID() + "\",";
     json += "\"rssi\":" + String(WiFiMgr::getRSSI()) + ",";
-    json += "\"mac\":\"" + WiFi.macAddress() + "\",";
     json += "\"setsPlayed\":" + String(sSetA + sSetB) + ",";
     json += "\"histA\":[";
     for (int i = 0; i < sSetA + sSetB && i < 3; i++) { if (i) json += ","; json += String(sHistA[i]); }
