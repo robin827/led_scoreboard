@@ -4,8 +4,11 @@
 
 #pragma once
 
+// ── Scoreboard identity (used for AP name, ESP-NOW beacon, etc.) ──────────
+#define SCOREBOARD_ID "Roundnet Scoreboard"
+
 // ── WiFi Hotspot ──────────────────────────────────────────────────────────
-#define AP_SSID       "Roundnet Scoreboard"
+#define AP_SSID       SCOREBOARD_ID
 #define AP_PASSWORD   ""
 
 // ── Firebase Realtime Database ────────────────────────────────────────────

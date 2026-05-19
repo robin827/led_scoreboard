@@ -159,6 +159,7 @@ void setup() {
 void loop() {
   // Core 1 (défaut) : Portail HTTP uniquement
   Portal::tick();
+  EspNow::tick();  // broadcast presence beacon every 3s
   
   // Log périodique de l'état WiFi (toutes les 10s)
   static uint32_t lastLog = 0;
