@@ -338,6 +338,71 @@ inline void init() {
   Serial.printf("[LED] Init: %s, brightness=%d\n", _matrixLarge ? "32x16" : "24x8", brightness);
 }
 
+inline void bootAnimation() {
+  const int cols = _matrixLarge ? L_COLS : (int)Config::NUM_COLS;
+  const int rows = _matrixLarge ? L_ROWS : (int)(Config::NUM_ROWS + 4);  // 24×12 incl. extension
+
+  const float cx   = (cols - 1) / 2.0f;
+  const float cy   = (rows - 1) / 2.0f;
+  const float maxD = sqrtf(cx * cx + cy * cy);
+  const float PI_F = 3.14159265f;
+
+  auto setPixel = [&](int x, int y, CRGB c) {
+    if (_matrixLarge) _leds[xyLarge(x, y)] = c;
+    else              _leds[xy(x, y)] = c;
+  };
+
+  // Brief white spark at center before explosion
+  FastLED.clear();
+  setPixel((int)roundf(cx), (int)roundf(cy), CRGB::White);
+  FastLED.show();
+  delay(80);
+
+  // Expanding rainbow ring: each pixel lights up when the wavefront reaches it.
+  // Color = angle around center (full hue wheel). Behind the ring: sparks decay.
+  const int   STEPS     = 35;
+  const float beamWidth = 2.0f;
+
+  for (int step = 0; step < STEPS + 20; step++) {
+    float radius = ((float)step / STEPS) * (maxD + beamWidth);
+
+    for (int x = 0; x < cols; x++) {
+      for (int y = 0; y < rows; y++) {
+        float dx   = x - cx;
+        float dy   = y - cy;
+        float dist = sqrtf(dx * dx + dy * dy);
+        float diff = radius - dist;  // >0 = wavefront has passed this pixel
+
+        int idx = _matrixLarge ? xyLarge(x, y) : xy(x, y);
+
+        if (diff < 0.0f) {
+          _leds[idx] = CRGB::Black;                       // not yet reached
+        } else if (diff < beamWidth) {
+          float   bri_f = 1.0f - diff / beamWidth;        // brightest at leading edge
+          uint8_t bri   = (uint8_t)(bri_f * 255.0f);
+          uint8_t hue   = (uint8_t)((atan2f(dy, dx) + PI_F) / (2.0f * PI_F) * 255.0f);
+          _leds[idx]    = CHSV(hue, 220, bri);
+        } else {
+          _leds[idx].nscale8(200);                         // spark decay behind ring
+        }
+      }
+    }
+
+    FastLED.show();
+    delay(22);
+  }
+
+  // Fade to black
+  for (int step = 0; step < 20; step++) {
+    for (int i = 0; i < 512; i++) _leds[i].nscale8(195);
+    FastLED.show();
+    delay(18);
+  }
+
+  FastLED.clear();
+  FastLED.show();
+}
+
 inline void setBrightness(uint8_t brightness) {
   brightness = constrain(brightness, 1, 255);
   FastLED.setBrightness(brightness);

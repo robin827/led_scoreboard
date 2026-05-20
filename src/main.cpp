@@ -110,48 +110,48 @@ void firebaseTask(void* parameter) {
 }
 
 void setup() {
-  delay(2000);
+  scoreMutex = xSemaphoreCreateMutex();
+
+  // LEDs first: boot animation plays while USB CDC enumerates
+  LED::init();
+  LED::bootAnimation();
+
   Serial.begin(115200);
-  delay(500);
-  
+  delay(200);
+
   Serial.println("\n=== ROUNDNET SCOREBOARD ===");
   Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
 
-  scoreMutex = xSemaphoreCreateMutex();
-
   // 1. Mode
-  Serial.println("[1/6] Init Mode...");
+  Serial.println("[1/5] Init Mode...");
   Mode::init();
 
   // 2. WiFi (AP + tentative STA)
-  Serial.println("[2/6] Init WiFi...");
+  Serial.println("[2/5] Init WiFi...");
   WiFiMgr::init();
 
   // 3. ESP-NOW (requires WiFi up)
-  Serial.println("[3/6] Init ESP-NOW...");
+  Serial.println("[3/5] Init ESP-NOW...");
   EspNow::init();
 
   // 4. Portail captif
-  Serial.println("[4/6] Init Portal...");
+  Serial.println("[4/5] Init Portal...");
   Portal::init();
 
-  // 5. LEDs
-  Serial.println("[5/6] Init LEDs...");
-  LED::init();
   LED::update(currentScore);
 
-  // 6. Tâche Firebase sur Core 0
-  Serial.println("[6/6] Creating Firebase task on Core 0...");
+  // 5. Tâche Firebase sur Core 0
+  Serial.println("[5/5] Creating Firebase task on Core 0...");
   xTaskCreatePinnedToCore(
-    firebaseTask,         // Fonction
-    "FirebaseTask",       // Nom
-    8192,                 // Stack size
-    NULL,                 // Paramètres
-    1,                    // Priorité
-    &firebaseTaskHandle,  // Handle
-    0                     // Core 0
+    firebaseTask,
+    "FirebaseTask",
+    8192,
+    NULL,
+    1,
+    &firebaseTaskHandle,
+    0
   );
-  
+
   Serial.println("\n=== READY ===");
   Serial.printf("AP: %s | Portal: http://%s\n", AP_SSID, WiFiMgr::apIP().c_str());
 }
