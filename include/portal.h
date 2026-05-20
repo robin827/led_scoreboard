@@ -31,6 +31,7 @@ static const char HTML[] PROGMEM = R"rawhtml(
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1c1830;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+body.top-align{align-items:flex-start}
 .container{width:100%;max-width:400px}
 .header{text-align:center;margin-bottom:32px}
 .logo{font-size:0.7rem;letter-spacing:4px;text-transform:uppercase;color:#8070a8;margin-bottom:8px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px}
@@ -135,12 +136,27 @@ select.input option{background:#3a3460}
 .modal-ok{flex:1;padding:12px;border:none;border-radius:10px;font-size:0.9rem;font-weight:600;cursor:pointer}
 .modal-ok-yellow{background:#f5c518;color:#1c1830}
 .modal-ok-red{background:#e83e8c;color:#fff}
+.win-selector{display:flex;align-items:center;gap:8px;margin-bottom:16px}
+.win-label{font-size:0.65rem;letter-spacing:1px;text-transform:uppercase;color:#8070a8;flex:1}
+.win-btn{flex:1;border:none;border-radius:8px;padding:8px 4px;font-size:0.95rem;font-weight:700;cursor:pointer;background:#3a3460;color:#8070a8;transition:all .2s;-webkit-tap-highlight-color:transparent}
+.win-btn.active{background:#f5c518;color:#1c1830}
+.btn-icon{background:none;border:none;color:#8070a8;cursor:pointer;padding:4px;display:flex;align-items:center;border-radius:6px;-webkit-tap-highlight-color:transparent}
+.btn-icon:active{opacity:0.6}
+.page{display:none}.page.active{display:block}
+.page-header{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+.page-title{font-size:0.8rem;letter-spacing:3px;text-transform:uppercase;color:#8070a8;font-weight:600;flex:1;text-align:center}
+.btn-back{background:none;border:none;color:#8070a8;cursor:pointer;font-size:0.85rem;font-weight:600;display:flex;align-items:center;gap:5px;padding:4px 0;-webkit-tap-highlight-color:transparent}
+.btn-back:active{opacity:0.6}
 </style>
 </head>
 <body>
 <div class="container">
+<div id="pageMain" class="page active">
   <div class="header">
-    <div class="logo">Roundnet Scoreboard</div>
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div class="logo" id="pageTitle">Roundnet Scoreboard</div>
+      <button class="btn-icon" onclick="showPage('pageSettings')" aria-label="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+    </div>
     <div id="wifiIndicator" class="wifi-indicator" style="display:none"><svg width="13" height="10" viewBox="0 0 13 10" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><circle cx="6.5" cy="8.5" r="1.2"/><path d="M4 5.8C4.7 5 5.6 4.6 6.5 4.6S8.3 5 9 5.8" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/><path d="M1.5 3C2.9 1.5 4.6.7 6.5.7S10.1 1.5 11.5 3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/></svg><span id="wifiIndicatorSSID"></span></div>
   </div>
 
@@ -168,6 +184,13 @@ select.input option{background:#3a3460}
     <div class="set-history" id="setHistory" style="display:none"></div>
     <div class="ratio-bar"><div class="ratio-a" id="ratioA"></div><div class="ratio-b" id="ratioB"></div></div>
 
+    <div class="win-selector" id="winSelector">
+      <span class="win-label">Play to</span>
+      <button class="win-btn" id="wp11" data-wp="11" onclick="setWinPoints(11)">11</button>
+      <button class="win-btn" id="wp15" data-wp="15" onclick="setWinPoints(15)">15</button>
+      <button class="win-btn active" id="wp21" data-wp="21" onclick="setWinPoints(21)">21</button>
+    </div>
+
     <div class="controls" id="controls">
       <button class="btn btn-primary-a btn-repeat" onpointerdown="startRepeat('/a/inc',this)" onpointerup="stopRepeat()" onpointerleave="stopRepeat()">+1</button>
       <button class="btn btn-primary-b btn-repeat" onpointerdown="startRepeat('/b/inc',this)" onpointerup="stopRepeat()" onpointerleave="stopRepeat()">+1</button>
@@ -183,27 +206,39 @@ select.input option{background:#3a3460}
 
   <div class="settings">
     <div class="setting-group">
-      <label class="setting-label">LED Matrix</label>
-      <div class="mode-selector">
-        <button class="mode-btn" id="mat0" onclick="setMatrixSize(0)">24 × 8<span class="mode-sub">small</span></button>
-        <button class="mode-btn" id="mat1" onclick="setMatrixSize(1)">32 × 16<span class="mode-sub">large</span></button>
-      </div>
-    </div>
-  </div>
-
-  <div class="settings">
-    <div class="setting-group">
       <label class="setting-label">Brightness</label>
       <input type="range" id="brightness" class="slider" min="1" max="255" value="80" oninput="setBrightness(this.value)">
       <div class="slider-value"><span id="brightVal">31</span>%</div>
     </div>
   </div>
 
+</div><!-- /pageMain -->
+
+<div id="pageSettings" class="page">
+  <div class="page-header">
+    <button class="btn-back" onclick="showPage('pageMain')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg> Back</button>
+    <span class="page-title">Settings</span>
+    <div style="width:40px"></div>
+  </div>
+
   <div class="settings">
     <div class="setting-group">
-      <label class="setting-label">Win Score</label>
-      <input type="number" class="input" id="winPoints" min="5" max="99" step="1" value="21" onfocus="_winPointsDirty=true" oninput="saveWinPoints()" onblur="saveWinPoints(true)">
-      <div style="font-size:0.7rem;color:#8070a8;margin-top:6px;line-height:1.4">A team wins when reaching this score with a 2-point lead. From <span id="deuceHint">20</span>–<span id="deuceHint2">21</span> onward: 1 serve each.</div>
+      <label class="setting-label">Scoreboard Name</label>
+      <div style="display:flex;gap:8px">
+        <input type="text" class="input" id="boardId" maxlength="31" placeholder="Roundnet Scoreboard" oninput="_boardIdDirty=true">
+        <button class="btn" style="background:#f5c518;color:#1c1830;padding:12px 16px;font-size:0.85rem;white-space:nowrap;border-radius:8px" onclick="confirmBoardIdSave()">Save</button>
+      </div>
+      <div style="font-size:0.7rem;color:#8070a8;margin-top:6px;line-height:1.4">WiFi hotspot name and ESP-NOW discovery ID.</div>
+    </div>
+  </div>
+
+  <div class="settings">
+    <div class="setting-group">
+      <label class="setting-label">LED Matrix</label>
+      <div class="mode-selector">
+        <button class="mode-btn" id="mat0" onclick="setMatrixSize(0)">24 × 8<span class="mode-sub">small</span></button>
+        <button class="mode-btn" id="mat1" onclick="setMatrixSize(1)">32 × 16<span class="mode-sub">large</span></button>
+      </div>
     </div>
   </div>
 
@@ -233,7 +268,9 @@ select.input option{background:#3a3460}
       <button class="btn-disconnect" id="btnDisconnect" style="display:none" onclick="disconnectWiFi()">Disconnect from <span id="connectedSSID"></span></button>
     </div>
   </div>
-</div>
+
+</div><!-- /pageSettings -->
+</div><!-- /container -->
 
 <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
   <div class="modal">
@@ -263,24 +300,39 @@ let _isConnecting = false;
 let _switching = false;
 let _repeatTimer = null, _repeatStart = null;
 let _pendingAction = null;
+let _pendingCallback = null;
 
-function openModal(title, desc, okClass, url) {
-  _pendingAction = url;
+function openModal(title, desc, okClass, urlOrCb, okLabel) {
+  if (typeof urlOrCb === 'function') { _pendingCallback = urlOrCb; _pendingAction = null; }
+  else { _pendingAction = urlOrCb; _pendingCallback = null; }
   document.getElementById('modalTitle').textContent = title;
   document.getElementById('modalDesc').textContent = desc;
   const ok = document.getElementById('modalOk');
   ok.className = 'modal-ok ' + okClass;
-  ok.textContent = title;
+  ok.textContent = okLabel || title;
   document.getElementById('modalOverlay').classList.add('open');
 }
 function closeModal() {
   document.getElementById('modalOverlay').classList.remove('open');
-  _pendingAction = null;
+  _pendingAction = null; _pendingCallback = null;
 }
 async function confirmModal() {
+  if (_pendingCallback) { const cb = _pendingCallback; closeModal(); await cb(); return; }
   const url = _pendingAction;
   closeModal();
   if (url) await action(url);
+}
+
+function confirmBoardIdSave() {
+  const val = document.getElementById('boardId').value.trim();
+  if (val.length === 0) return;
+  openModal(
+    'Rename Scoreboard',
+    'Your scoreboard’s Wi‑Fi hotspot will be renamed to «' + val + '». You’ll be disconnected — to get back, open your Wi‑Fi settings and connect to «' + val + '».',
+    'modal-ok-yellow',
+    saveBoardId,
+    'Rename'
+  );
 }
 
 function applyModeUI(mode, online) {
@@ -298,9 +350,9 @@ function applyModeUI(mode, online) {
   const readMode = mode === 1;
   document.getElementById('controls').style.display = document.getElementById('actions').style.display = readMode ? 'none' : '';
   document.querySelectorAll('.team-label').forEach(el => el.style.cursor = readMode ? 'default' : 'pointer');
-  const wpEl = document.getElementById('winPoints');
-  wpEl.disabled = readMode;
-  wpEl.style.opacity = readMode ? '0.5' : '1';
+  const winSel = document.getElementById('winSelector');
+  winSel.style.opacity = readMode ? '0.4' : '1';
+  winSel.style.pointerEvents = readMode ? 'none' : '';
 }
 
 async function action(url, btn) {
@@ -383,11 +435,14 @@ async function refresh() {
       applyModeUI(d.mode, d.online);
     }
 
+    if (d.boardId && !_boardIdDirty) {
+      document.getElementById('boardId').value = d.boardId;
+      document.getElementById('pageTitle').textContent = d.boardId;
+    }
     if (d.channel) document.getElementById('channel').value = d.channel;
-    if (d.winPoints && !_winPointsDirty) {
-      document.getElementById('winPoints').value = d.winPoints;
-      document.getElementById('deuceHint').textContent = d.winPoints - 1;
-      document.getElementById('deuceHint2').textContent = d.winPoints;
+    if (d.winPoints) {
+      document.querySelectorAll('.win-btn').forEach(b =>
+        b.classList.toggle('active', parseInt(b.dataset.wp) === d.winPoints));
     }
 
 
@@ -440,17 +495,15 @@ async function refresh() {
   } catch(e) {}
 }
 
-function saveWinPoints(immediate = false) {
-  const wp = parseInt(document.getElementById('winPoints').value);
-  if (wp >= 5 && wp <= 99) {
-    document.getElementById('deuceHint').textContent = wp - 1;
-    document.getElementById('deuceHint2').textContent = wp;
-    clearTimeout(_winPointsTimer);
-    _winPointsTimer = setTimeout(async () => {
-      try { await fetch('/winpoints', {method:'POST', body: String(wp)}); } catch(e) {}
-      _winPointsDirty = false;
-    }, immediate ? 0 : 600);
-  }
+async function setWinPoints(val) {
+  document.querySelectorAll('.win-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.wp) === val));
+  try { await fetch('/winpoints', {method:'POST', body: String(val)}); } catch(e) {}
+}
+
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === id));
+  document.body.classList.toggle('top-align', id === 'pageSettings');
 }
 
 async function setMatrixSize(v) {
@@ -561,8 +614,16 @@ function disconnectWiFi() {
 
 let _brightnessTimer = null;
 let _brightnessDirty = false;
-let _winPointsTimer = null;
-let _winPointsDirty = false;
+let _boardIdDirty = false;
+async function saveBoardId() {
+  const val = document.getElementById('boardId').value.trim();
+  if (val.length === 0) return;
+  try {
+    await fetch('/setboardid', {method:'POST', body: val});
+    document.getElementById('pageTitle').textContent = val;
+    _boardIdDirty = false;
+  } catch(e) {}
+}
 function setBrightness(val) {
   document.getElementById('brightVal').textContent = Math.max(1, Math.round(val / 255 * 100));
   _brightnessDirty = true;
@@ -620,6 +681,7 @@ inline void init() {
     json += "\"online\":" + String(WiFiMgr::isOnline() ? "true" : "false") + ",";
     json += "\"ssid\":\"" + WiFiMgr::getSSID() + "\",";
     json += "\"rssi\":" + String(WiFiMgr::getRSSI()) + ",";
+    json += "\"boardId\":\"" + WiFiMgr::getScoreboardId() + "\",";
     json += "\"setsPlayed\":" + String(sSetA + sSetB) + ",";
     json += "\"histA\":[";
     for (int i = 0; i < sSetA + sSetB && i < 3; i++) { if (i) json += ","; json += String(sHistA[i]); }
@@ -663,6 +725,17 @@ inline void init() {
     server->send(200, "text/plain", "OK");
   });
   
+  // Scoreboard ID
+  server->on("/setboardid", HTTP_POST, []() {
+    if (server->hasArg("plain")) {
+      String id = server->arg("plain");
+      id.trim();
+      if (id.length() > 0 && id.length() <= 31)
+        WiFiMgr::setScoreboardId(id);
+    }
+    server->send(200, "text/plain", "OK");
+  });
+
   // Matrix size
   server->on("/matrix", HTTP_POST, []() {
     if (server->hasArg("plain")) {

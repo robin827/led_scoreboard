@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include "score_actions.h"
 #include "config.h"
+#include "wifi_mgr.h"
 
 namespace EspNow {
 
@@ -55,8 +56,8 @@ inline void tick() {
   _lastBeacon = now;
 
   // Payload: "SCORE:<name>" — sender uses prefix to identify scoreboards
-  char beacon[32];
-  snprintf(beacon, sizeof(beacon), "SCORE:%s", AP_SSID);
+  char beacon[40];  // "SCORE:" (6) + up to 31 chars + null
+  snprintf(beacon, sizeof(beacon), "SCORE:%s", WiFiMgr::getScoreboardId().c_str());
   static const uint8_t broadcast[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
   esp_now_send(broadcast, (const uint8_t*)beacon, strlen(beacon));
 }

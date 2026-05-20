@@ -153,7 +153,7 @@ void setup() {
   );
 
   Serial.println("\n=== READY ===");
-  Serial.printf("AP: %s | Portal: http://%s\n", AP_SSID, WiFiMgr::apIP().c_str());
+  Serial.printf("AP: %s | Portal: http://%s\n", WiFiMgr::getScoreboardId().c_str(), WiFiMgr::apIP().c_str());
 }
 
 void loop() {

@@ -18,6 +18,7 @@ namespace WiFiMgr {
 static Preferences _prefs;
 static String      _cachedSsid    = "";
 static String      _cachedPass    = "";
+static String      _scoreboardId  = "";
 static bool        _credsCached   = false;
 static bool        _online        = false;
 static bool        _connecting    = false;
@@ -105,14 +106,18 @@ inline String scanNetworks() {
 // ── Init ──────────────────────────────────────────────────────────────────
 
 inline void init() {
+  _prefs.begin("wifi", false);
+  _scoreboardId = _prefs.getString("boardId", SCOREBOARD_ID);
+  _prefs.end();
+
   WiFi.onEvent(_onEvent);
   WiFi.persistent(false);         // credentials managed by NVS, not the SDK
   WiFi.setAutoReconnect(false);   // we manage retries ourselves via tick()
   WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  WiFi.softAP(_scoreboardId.c_str(), AP_PASSWORD);
   delay(500);
   Serial.printf("[WiFi] AP started: %s | IP: %s\n",
-    AP_SSID, WiFi.softAPIP().toString().c_str());
+    _scoreboardId.c_str(), WiFi.softAPIP().toString().c_str());
 
   String ssid, pass;
   if (loadCredentials(ssid, pass)) {
@@ -128,7 +133,7 @@ inline void tick() {
   // Restore softAP if it dropped (can happen briefly after STA associates)
   if (WiFi.softAPIP()[0] == 0) {
     Serial.println("[WiFi] AP dropped, restoring...");
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    WiFi.softAP(_scoreboardId.c_str(), AP_PASSWORD);
   }
 
   // Constant 15s retry — skip in LOCAL mode or while already connecting
@@ -143,12 +148,23 @@ inline void tick() {
 
 // ── Accessors ─────────────────────────────────────────────────────────────
 
-inline bool     isOnline()     { return _online; }
-inline bool     isConnecting() { return _connecting; }
-inline String   localIP()      { return WiFi.localIP().toString(); }
-inline String   apIP()         { return WiFi.softAPIP().toString(); }
-inline String   getSSID()      { return _online ? WiFi.SSID() : ""; }
-inline int32_t  getRSSI()      { return _online ? WiFi.RSSI() : 0; }
+inline bool     isOnline()        { return _online; }
+inline bool     isConnecting()    { return _connecting; }
+inline String   localIP()         { return WiFi.localIP().toString(); }
+inline String   apIP()            { return WiFi.softAPIP().toString(); }
+inline String   getSSID()         { return _online ? WiFi.SSID() : ""; }
+inline int32_t  getRSSI()         { return _online ? WiFi.RSSI() : 0; }
+inline String   getScoreboardId() { return _scoreboardId; }
+
+inline void setScoreboardId(const String& id) {
+  if (id.length() == 0 || id.length() > 31) return;
+  _scoreboardId = id;
+  _prefs.begin("wifi", false);
+  _prefs.putString("boardId", id);
+  _prefs.end();
+  WiFi.softAP(_scoreboardId.c_str(), AP_PASSWORD);
+  Serial.printf("[WiFi] Scoreboard ID updated: %s\n", _scoreboardId.c_str());
+}
 
 // Called after new credentials are submitted via the portal
 inline void resetRetryCount() {
