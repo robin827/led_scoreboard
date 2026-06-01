@@ -214,7 +214,8 @@ inline void drawDigitLarge(int d, int sx, int sy, CRGB col) {
 // ─── Breathing animation state ───────────────────────────────────────────────
 
 static Score    _animScore;
-static uint32_t _lastTick = 0;
+static uint32_t _lastTick  = 0;
+static bool     _timerMode = false;  // suppresses serve-dot tick during break timer
 
 // Returns a brightness multiplier (0–255) that oscillates ~once per 1.3 s, reaching full off
 inline uint8_t _breatheFactor() {
@@ -417,6 +418,7 @@ inline uint8_t getBrightness() { return FastLED.getBrightness(); }
 
 inline void update(const Score& score) {
   _animScore = score;
+  _timerMode = false;
   FastLED.clear();
   if (_matrixLarge) _updateLarge(score, _breatheFactor());
   else              _updateSmall(score, _breatheFactor());
@@ -428,8 +430,104 @@ inline void tick() {
   uint32_t now = millis();
   if (now - _lastTick < 33) return;  // ~30 fps
   _lastTick = now;
+  if (_timerMode) return;  // timer display is managed by main loop
   if (_matrixLarge) _applyServeLarge(_animScore, _breatheFactor());
   else              _applyServeSmall(_animScore, _breatheFactor());
+  FastLED.show();
+}
+
+// 4 players (2 team A, 2 team B) rotating CCW by a quarter circle over 2 seconds.
+// Players start at 0°/90°/180°/270° on a circle; each moves +90° CCW.
+// Screen convention: x = cx + r*cos(a),  y = cy - r*sin(a)  (y flipped).
+inline void rotationAnimation() {
+  const int cols = _matrixLarge ? L_COLS : (int)Config::NUM_COLS;
+  const int rows = _matrixLarge ? L_ROWS : (int)(Config::NUM_ROWS + 4);  // full 24×12
+  const float cx = (cols - 1) * 0.5f;
+  const float cy = (rows - 1) * 0.5f;
+  const float r  = _matrixLarge ? 5.5f : 5.5f;  // fills 24×12: min(cx=11.5, cy=5.5)
+  static constexpr float PI2 = 6.28318530f;
+
+  auto sp = [&](int x, int y, CRGB c) {
+    if (x < 0 || x >= cols || y < 0 || y >= rows) return;
+    if (_matrixLarge) _leds[xyLarge(x, y)] = c;
+    else              _leds[xy(x, y)]       = c;
+  };
+
+  // A1 at 0°(right), A2 at 90°(top), B1 at 180°(left), B2 at 270°(bottom)
+  const float startAngle[4] = { 0.0f, PI2*0.25f, PI2*0.5f, PI2*0.75f };
+  const CRGB  playerCol[4]  = { COLOR_A, COLOR_A, COLOR_B, COLOR_B };
+  const float netR       = _matrixLarge ? 2.5f : 1.5f;
+  const int   NET_STEPS  = 12;
+  const int   FRAMES     = 25;    // frames per rep (500 ms at 20 ms/frame)
+  const int   REPS       = 3;
+  const int   PAUSE_MS   = 120;   // pause between reps (white circle only)
+  const int   TRAIL      = 4;
+  const float TRAIL_STEP = 0.12f;
+
+  auto drawNet = [&]() {
+    for (int i = 0; i < NET_STEPS; i++) {
+      float a = PI2 * i / NET_STEPS;
+      sp((int)roundf(cx + netR * cosf(a)), (int)roundf(cy - netR * sinf(a)), CRGB(200, 200, 200));
+    }
+  };
+
+  for (int rep = 0; rep < REPS; rep++) {
+    for (int f = 0; f < FRAMES; f++) {
+      FastLED.clear();
+      drawNet();
+      float rot = PI2 * 0.25f * f / (FRAMES - 1);  // 0 → 90° CCW
+      for (int p = 0; p < 4; p++) {
+        float head = startAngle[p] + rot;
+        for (int t = TRAIL; t >= 0; t--) {
+          float a  = head - t * TRAIL_STEP;
+          int   px = (int)roundf(cx + r * cosf(a));
+          int   py = (int)roundf(cy - r * sinf(a));
+          uint8_t bri = (t == 0) ? 230 : (uint8_t)(40u + 50u * (TRAIL - t) / TRAIL);
+          CRGB c = playerCol[p]; c.nscale8(bri);
+          sp(px, py, c);
+        }
+      }
+      FastLED.show();
+      delay(20);
+    }
+    if (rep < REPS - 1) {
+      FastLED.clear();
+      drawNet();
+      FastLED.show();
+      delay(PAUSE_MS);
+    }
+  }
+  update(_animScore);
+}
+
+// Break timer: M:SS in place of the score, set badges still shown.
+inline void showBreakTimer(uint32_t remainingMs, bool colonOn) {
+  _timerMode = true;
+  FastLED.clear();
+  uint32_t totalSec = (remainingMs + 999) / 1000;
+  int mins = (int)(totalSec / 60);
+  int secs = (int)(totalSec % 60);
+  CRGB col = CRGB(0, 210, 80);  // green
+
+  if (!_matrixLarge) {
+    // Small 24×8: +1 LED gap between each element, centered at x=12
+    // mins x=3..6 | gap x=7..8 | colon x=9 | gap x=10..11 | tens x=12..15 | gap x=16..17 | units x=18..21
+    drawDigit(mins,      3, 0, col);
+    if (colonOn) { _leds[xy(9, 2)] = col; _leds[xy(9, 5)] = col; }
+    drawDigit(secs / 10, 12, 0, col);
+    drawDigit(secs % 10, 18, 0, col);
+    drawSetDigitSm(_animScore.setA, 5,  Config::NUM_ROWS, COLOR_A);
+    drawSetDigitSm(_animScore.setB, 16, Config::NUM_ROWS, COLOR_B);
+  } else {
+    // Large 32×16: +1 LED gap, centered at x=16
+    // mins x=3..8 | gap x=9..10 | colon x=11 | gap x=12..14 | tens x=15..20 | gap x=21..23 | units x=24..29
+    drawDigitLarge(mins,      3, 0, col);
+    if (colonOn) { _leds[xyLarge(11, 3)] = col; _leds[xyLarge(11, 7)] = col; }
+    drawDigitLarge(secs / 10, 15, 0, col);
+    drawDigitLarge(secs % 10, 24, 0, col);
+    drawDigitSmall(_animScore.setA, 2,  12, COLOR_A);
+    drawDigitSmall(_animScore.setB, 27, 12, COLOR_B);
+  }
   FastLED.show();
 }
 

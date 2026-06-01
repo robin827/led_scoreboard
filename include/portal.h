@@ -152,6 +152,12 @@ select.input option{background:var(--elem)}
 .page-title{font-size:0.8rem;letter-spacing:3px;text-transform:uppercase;color:var(--accent);font-weight:600;flex:1;text-align:center}
 .btn-back{background:none;border:none;color:var(--accent);cursor:pointer;font-size:0.85rem;font-weight:600;display:flex;align-items:center;gap:5px;padding:4px 0;-webkit-tap-highlight-color:transparent}
 .btn-back:active{opacity:0.6}
+@keyframes noticeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+.rotate-notice{background:rgba(var(--accent-rgb),0.12);color:var(--accent);border:1px solid rgba(var(--accent-rgb),0.25);border-radius:10px;padding:10px 16px;text-align:center;font-size:0.82rem;font-weight:600;letter-spacing:1px;margin-bottom:12px;display:none}
+.rotate-notice.visible{display:block;animation:noticeIn .3s ease}
+.timer-val{font-size:3rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--accent);letter-spacing:6px;line-height:1}
+.timer-sub{font-size:0.55rem;letter-spacing:3px;text-transform:uppercase;color:var(--accent);opacity:0.5;margin-top:6px}
+.scores.timer-active .set-badge{top:6px;transform:none}
 </style>
 </head>
 <body>
@@ -166,23 +172,30 @@ select.input option{background:var(--elem)}
   </div>
 
   <div class="scoreboard">
+    <div class="rotate-notice" id="rotateNotice">&#8635; Players rotate positions</div>
     <div class="scores">
       <div class="set-badge set-badge-a" id="setA">0</div>
       <div class="set-badge set-badge-b" id="setB">0</div>
-      <div class="team">
-        <div class="team-label lbl-a first-srv" id="lblA" onclick="setFirstServer(0)">Team A<span class="srv-hint">1st</span></div>
-        <div class="score-wrap">
-          <div class="serve-col serve-col-a" id="serveA"></div>
-          <div class="score score-a" id="scoreA">00</div>
+      <div id="scoreView" style="display:contents">
+        <div class="team">
+          <div class="team-label lbl-a first-srv" id="lblA" onclick="setFirstServer(0)">Team A<span class="srv-hint">1st</span></div>
+          <div class="score-wrap">
+            <div class="serve-col serve-col-a" id="serveA"></div>
+            <div class="score score-a" id="scoreA">00</div>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="team">
+          <div class="team-label lbl-b" id="lblB" onclick="setFirstServer(1)">Team B<span class="srv-hint">1st</span></div>
+          <div class="score-wrap">
+            <div class="score score-b" id="scoreB">00</div>
+            <div class="serve-col serve-col-b" id="serveB"></div>
+          </div>
         </div>
       </div>
-      <div class="divider"></div>
-      <div class="team">
-        <div class="team-label lbl-b" id="lblB" onclick="setFirstServer(1)">Team B<span class="srv-hint">1st</span></div>
-        <div class="score-wrap">
-          <div class="score score-b" id="scoreB">00</div>
-          <div class="serve-col serve-col-b" id="serveB"></div>
-        </div>
+      <div id="timerView" style="display:none;text-align:center;width:100%;padding:32px 0 8px">
+        <div class="timer-val" id="timerText">3:00</div>
+        <div class="timer-sub">Break</div>
       </div>
     </div>
 
@@ -306,6 +319,33 @@ let _switching = false;
 let _repeatTimer = null, _repeatStart = null;
 let _pendingAction = null;
 let _pendingCallback = null;
+let _lastRotations = -1;
+let _rotateNoticeTimer = null;
+let _localTimerInterval = null;
+let _localTimerEndMs = 0;
+
+function showRotationNotice() {
+  if (_rotateNoticeTimer) clearTimeout(_rotateNoticeTimer);
+  const el = document.getElementById('rotateNotice');
+  el.classList.remove('visible');
+  void el.offsetWidth;
+  el.classList.add('visible');
+  _rotateNoticeTimer = setTimeout(() => el.classList.remove('visible'), 4000);
+}
+
+function updateTimerDisplay() {
+  const remaining = Math.max(0, _localTimerEndMs - Date.now());
+  const totalSec = Math.ceil(remaining / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  document.getElementById('timerText').textContent = m + ':' + String(s).padStart(2, '0');
+  if (remaining <= 0) {
+    clearInterval(_localTimerInterval); _localTimerInterval = null;
+    document.getElementById('scoreView').style.display = 'contents';
+    document.getElementById('timerView').style.display = 'none';
+    document.querySelector('.scores').classList.remove('timer-active');
+  }
+}
 
 function openModal(title, desc, okClass, urlOrCb, okLabel) {
   if (typeof urlOrCb === 'function') { _pendingCallback = urlOrCb; _pendingAction = null; }
@@ -467,6 +507,30 @@ async function refresh() {
       }
     } else {
       hist.style.display = 'none';
+    }
+
+    // Rotation notice
+    if (d.rotations !== undefined) {
+      if (_lastRotations >= 0 && d.rotations > _lastRotations) showRotationNotice();
+      _lastRotations = d.rotations;
+    }
+
+    // Break timer
+    const timerSec = d.breakTimer || 0;
+    if (timerSec > 0) {
+      _localTimerEndMs = Date.now() + timerSec * 1000;
+      if (!_localTimerInterval) {
+        document.getElementById('scoreView').style.display = 'none';
+        document.getElementById('timerView').style.display = 'block';
+        document.querySelector('.scores').classList.add('timer-active');
+        _localTimerInterval = setInterval(updateTimerDisplay, 200);
+      }
+      updateTimerDisplay();
+    } else if (_localTimerInterval) {
+      clearInterval(_localTimerInterval); _localTimerInterval = null;
+      document.getElementById('scoreView').style.display = 'contents';
+      document.getElementById('timerView').style.display = 'none';
+      document.querySelector('.scores').classList.remove('timer-active');
     }
 
     if (d.brightness !== undefined && !_brightnessDirty) {
@@ -687,6 +751,8 @@ inline void init() {
     json += "\"ssid\":\"" + WiFiMgr::getSSID() + "\",";
     json += "\"rssi\":" + String(WiFiMgr::getRSSI()) + ",";
     json += "\"boardId\":\"" + WiFiMgr::getScoreboardId() + "\",";
+    json += "\"breakTimer\":" + String(ScoreActions::breakTimerRemainingMs() / 1000) + ",";
+    json += "\"rotations\":" + String(ScoreActions::getRotationCount()) + ",";
     json += "\"setsPlayed\":" + String(sSetA + sSetB) + ",";
     json += "\"histA\":[";
     for (int i = 0; i < sSetA + sSetB && i < 3; i++) { if (i) json += ","; json += String(sHistA[i]); }

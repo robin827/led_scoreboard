@@ -157,11 +157,43 @@ void setup() {
 }
 
 void loop() {
-  // Core 1 (défaut) : Portail HTTP uniquement
   Portal::tick();
-  EspNow::tick();  // broadcast presence beacon every 3s
-  
-  // Log périodique de l'état WiFi (toutes les 10s)
+  EspNow::tick();
+
+  // Rotation animation: non-blocking 1.5 s wait so portal stays responsive,
+  // then 2 s spinning blue comets (blocking is fine at that point — banner already shown)
+  static bool     _rotWaiting   = false;
+  static uint32_t _rotAnimStart = 0;
+  if (!_rotWaiting && ScoreActions::getAndClearRotation()) {
+    _rotWaiting   = true;
+    _rotAnimStart = millis();
+  }
+  if (_rotWaiting && (millis() - _rotAnimStart) >= 1500) {
+    _rotWaiting = false;
+    LED::rotationAnimation();
+  }
+
+  // Break timer display (between sets)
+  static bool     prevTimerActive = false;
+  static uint32_t lastTimerUpdate = 0;
+  uint32_t timerMs    = ScoreActions::breakTimerRemainingMs();
+  bool     timerActive = (timerMs > 0);
+
+  if (timerActive) {
+    uint32_t now = millis();
+    if (now - lastTimerUpdate >= 250) {
+      lastTimerUpdate = now;
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      LED::showBreakTimer(timerMs, true);
+      xSemaphoreGive(scoreMutex);
+    }
+  } else if (prevTimerActive) {
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    LED::update(currentScore);
+    xSemaphoreGive(scoreMutex);
+  }
+  prevTimerActive = timerActive;
+
   static uint32_t lastLog = 0;
   if (millis() - lastLog > 10000) {
     lastLog = millis();
@@ -172,7 +204,7 @@ void loop() {
       ESP.getFreeHeap()
     );
   }
-  
+
   delay(10);
 }
 // Core 0 gère Firebase en parallèle via firebaseTask()
