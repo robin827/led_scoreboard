@@ -531,4 +531,87 @@ inline void showBreakTimer(uint32_t remainingMs, bool colonOn) {
   FastLED.show();
 }
 
+// ─── Timeout display ─────────────────────────────────────────────────────────
+// 3×5 glyphs for "TIMEOUT" (I = plain vertical bar, E has proper middle bar).
+// Small matrix layout: timer rows 0..5 | gap row 6 | text rows 7..11.
+// Text scrolls right-to-left (stride=4: 3px char + 1px gap → 27px total > 24px).
+
+static const uint8_t _TG_T[5][3] = {{1,1,1},{0,1,0},{0,1,0},{0,1,0},{0,1,0}};
+static const uint8_t _TG_I[5][3] = {{0,1,0},{0,1,0},{0,1,0},{0,1,0},{0,1,0}};  // plain bar
+static const uint8_t _TG_M[5][3] = {{1,0,1},{1,1,1},{1,0,1},{1,0,1},{1,0,1}};
+static const uint8_t _TG_E[5][3] = {{1,1,1},{1,0,0},{1,1,0},{1,0,0},{1,1,1}};
+static const uint8_t _TG_O[5][3] = {{1,1,1},{1,0,1},{1,0,1},{1,0,1},{1,1,1}};
+static const uint8_t _TG_U[5][3] = {{1,0,1},{1,0,1},{1,0,1},{1,0,1},{1,1,1}};
+
+inline void showTimeoutDisplay(uint32_t remainingMs) {
+  _timerMode = true;
+  FastLED.clear();
+
+  CRGB timerCol = CRGB(0, 210, 80);   // green countdown
+  CRGB textCol  = CRGB(255, 120, 0);  // orange "TIME OUT"
+
+  uint32_t totalSec = (remainingMs + 999) / 1000;
+  int mins = (int)(totalSec / 60);
+  int secs = (int)(totalSec % 60);
+
+  const uint8_t (*msg[7])[3] = {_TG_T,_TG_I,_TG_M,_TG_E,_TG_O,_TG_U,_TG_T};
+  // Per-char x offsets: stride=4 within TIME and within OUT,
+  // 3-LED gap between E and O.
+  // T=0, I=4, M=8, E=12 | gap 15+16+17 | O=18, U=22, T=26 → TEXT_W=29
+  static const int8_t CHAR_X[7] = {0, 4, 8, 12, 18, 22, 26};
+  static constexpr int TEXT_W = 29;  // spans x=0..28
+
+  if (!_matrixLarge) {
+    // Timer: rows 0..6 using the standard 7-row digit shapes
+    drawDigit(mins,      3, 0, timerCol);
+    _leds[xy(9, 2)] = timerCol; _leds[xy(9, 5)] = timerCol;
+    drawDigit(secs / 10, 12, 0, timerCol);
+    drawDigit(secs % 10, 18, 0, timerCol);
+    // Multiple copies scroll continuously in rows 7..11, 5-LED gap between instances.
+    // LOOP_W = TEXT_W + gap = 34. Copies at xOff + k*LOOP_W cover the display.
+    const int COLS   = (int)Config::NUM_COLS;
+    const int LOOP_W = TEXT_W + 5;  // 34
+    int scroll = (int)((millis() * 10UL / 1000UL) % (uint32_t)LOOP_W);
+    int xOff   = -scroll;  // base copy starts at x=0 when scroll=0
+    for (int k = 0; k <= 2; k++) {
+      int copyOff = xOff + k * LOOP_W;
+      if (copyOff >= COLS || copyOff + TEXT_W <= 0) continue;
+      for (int ci = 0; ci < 7; ci++) {
+        int charX = copyOff + CHAR_X[ci];
+        for (int gy = 0; gy < 5; gy++)
+          for (int gx = 0; gx < 3; gx++) {
+            if (!msg[ci][gy][gx]) continue;
+            int px = charX + gx;
+            int py = (int)Config::NUM_ROWS - 1 + gy;  // y = 7..11
+            if (px >= 0 && px < COLS) _leds[xy(px, py)] = textCol;
+          }
+      }
+    }
+  } else {
+    // Large matrix: full 11-row digits, text scrolls in rows 11..15 (5 rows)
+    drawDigitLarge(mins,      3, 0, timerCol);
+    _leds[xyLarge(11, 3)] = timerCol; _leds[xyLarge(11, 7)] = timerCol;
+    drawDigitLarge(secs / 10, 15, 0, timerCol);
+    drawDigitLarge(secs % 10, 24, 0, timerCol);
+    const int LOOP_W = TEXT_W + 5;  // 34
+    int scroll = (int)((millis() * 10UL / 1000UL) % (uint32_t)LOOP_W);
+    int xOff   = -scroll;
+    for (int k = 0; k <= 2; k++) {
+      int copyOff = xOff + k * LOOP_W;
+      if (copyOff >= L_COLS || copyOff + TEXT_W <= 0) continue;
+      for (int ci = 0; ci < 7; ci++) {
+        int charX = copyOff + CHAR_X[ci];
+        for (int gy = 0; gy < 5; gy++)
+          for (int gx = 0; gx < 3; gx++) {
+            if (!msg[ci][gy][gx]) continue;
+            int px = charX + gx;
+            int py = 11 + gy;  // y = 11..15
+            if (px >= 0 && px < L_COLS) _leds[xyLarge(px, py)] = textCol;
+          }
+      }
+    }
+  }
+  FastLED.show();
+}
+
 } // namespace LED

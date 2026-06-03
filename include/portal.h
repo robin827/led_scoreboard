@@ -195,7 +195,7 @@ select.input option{background:var(--elem)}
       </div>
       <div id="timerView" style="display:none;text-align:center;width:100%;padding:32px 0 8px">
         <div class="timer-val" id="timerText">3:00</div>
-        <div class="timer-sub">Break</div>
+        <div class="timer-sub" id="timerSub">Break</div>
       </div>
     </div>
 
@@ -218,6 +218,7 @@ select.input option{background:var(--elem)}
 
     <div class="actions" id="actions">
       <button class="btn" onclick="openModal('Next Set','Confirm the current set is over and start the next one.','modal-ok-yellow','/nextset')">Next Set</button>
+      <button class="btn" onclick="action('/timeout',this)">Timeout</button>
       <button class="btn" onclick="openModal('Reset Score','Reset all scores and sets. This cannot be undone.','modal-ok-red','/reset')">Reset</button>
     </div>
   </div>
@@ -333,18 +334,31 @@ function showRotationNotice() {
   _rotateNoticeTimer = setTimeout(() => el.classList.remove('visible'), 4000);
 }
 
+function _showTimerView(label) {
+  document.getElementById('timerSub').textContent = label;
+  if (!_localTimerInterval) {
+    document.getElementById('scoreView').style.display = 'none';
+    document.getElementById('timerView').style.display = 'block';
+    document.querySelector('.scores').classList.add('timer-active');
+    _localTimerInterval = setInterval(updateTimerDisplay, 200);
+  }
+}
+
+function _hideTimerView() {
+  if (!_localTimerInterval) return;
+  clearInterval(_localTimerInterval); _localTimerInterval = null;
+  document.getElementById('scoreView').style.display = 'contents';
+  document.getElementById('timerView').style.display = 'none';
+  document.querySelector('.scores').classList.remove('timer-active');
+}
+
 function updateTimerDisplay() {
   const remaining = Math.max(0, _localTimerEndMs - Date.now());
   const totalSec = Math.ceil(remaining / 1000);
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
   document.getElementById('timerText').textContent = m + ':' + String(s).padStart(2, '0');
-  if (remaining <= 0) {
-    clearInterval(_localTimerInterval); _localTimerInterval = null;
-    document.getElementById('scoreView').style.display = 'contents';
-    document.getElementById('timerView').style.display = 'none';
-    document.querySelector('.scores').classList.remove('timer-active');
-  }
+  if (remaining <= 0) _hideTimerView();
 }
 
 function openModal(title, desc, okClass, urlOrCb, okLabel) {
@@ -515,22 +529,20 @@ async function refresh() {
       _lastRotations = d.rotations;
     }
 
-    // Break timer
-    const timerSec = d.breakTimer || 0;
-    if (timerSec > 0) {
-      _localTimerEndMs = Date.now() + timerSec * 1000;
-      if (!_localTimerInterval) {
-        document.getElementById('scoreView').style.display = 'none';
-        document.getElementById('timerView').style.display = 'block';
-        document.querySelector('.scores').classList.add('timer-active');
-        _localTimerInterval = setInterval(updateTimerDisplay, 200);
-      }
+    // Break timer / timeout display
+    const breakSecs = d.breakTimer   || 0;
+    const toSecs    = d.timeoutTimer || 0;
+
+    if (toSecs > 0) {
+      _showTimerView('Time Out');
+      _localTimerEndMs = Date.now() + toSecs * 1000;
       updateTimerDisplay();
-    } else if (_localTimerInterval) {
-      clearInterval(_localTimerInterval); _localTimerInterval = null;
-      document.getElementById('scoreView').style.display = 'contents';
-      document.getElementById('timerView').style.display = 'none';
-      document.querySelector('.scores').classList.remove('timer-active');
+    } else if (breakSecs > 0) {
+      _showTimerView('Break');
+      _localTimerEndMs = Date.now() + breakSecs * 1000;
+      updateTimerDisplay();
+    } else {
+      _hideTimerView();
     }
 
     if (d.brightness !== undefined && !_brightnessDirty) {
@@ -752,6 +764,7 @@ inline void init() {
     json += "\"rssi\":" + String(WiFiMgr::getRSSI()) + ",";
     json += "\"boardId\":\"" + WiFiMgr::getScoreboardId() + "\",";
     json += "\"breakTimer\":" + String(ScoreActions::breakTimerRemainingMs() / 1000) + ",";
+    json += "\"timeoutTimer\":" + String(ScoreActions::timeoutCountdownMs() / 1000) + ",";
     json += "\"rotations\":" + String(ScoreActions::getRotationCount()) + ",";
     json += "\"setsPlayed\":" + String(sSetA + sSetB) + ",";
     json += "\"histA\":[";
@@ -772,6 +785,7 @@ inline void init() {
     if (!ScoreActions::apply("nextset")) { server->send(409, "text/plain", "TIED"); return; }
     server->send(200, "text/plain", "OK");
   });
+  server->on("/timeout", HTTP_POST, []() { ScoreActions::apply("timeout"); server->send(200, "text/plain", "OK"); });
   server->on("/reset",   HTTP_POST, []() { ScoreActions::apply("reset");   server->send(200, "text/plain", "OK"); });
 
   server->on("/serve/first", HTTP_POST, []() {

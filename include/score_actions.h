@@ -9,22 +9,20 @@ extern SemaphoreHandle_t scoreMutex;
 
 namespace ScoreActions {
 
-static uint32_t _rotationCount   = 0;    // increments each time players should rotate
-static bool     _rotationPending  = false; // triggers LED animation in loop()
+static uint32_t _rotationCount   = 0;
+static bool     _rotationPending  = false;
 static bool     _timerActive      = false;
 static uint32_t _timerStartMs     = 0;
-static constexpr uint32_t BREAK_DURATION_MS = 3UL * 60UL * 1000UL;
+static bool     _timeoutActive    = false;
+static uint32_t _timeoutStartMs   = 0;
 
-inline bool getAndClearRotation() {
-  bool r = _rotationPending;
-  _rotationPending = false;
-  return r;
-}
+static constexpr uint32_t BREAK_DURATION_MS    = 3UL * 60UL * 1000UL;
+static constexpr uint32_t TIMEOUT_COUNTDOWN_MS = 60UL * 1000UL;
 
-inline uint32_t getRotationCount() { return _rotationCount; }
+inline bool     getAndClearRotation() { bool r = _rotationPending; _rotationPending = false; return r; }
+inline uint32_t getRotationCount()    { return _rotationCount; }
 
 inline bool isBreakTimerActive() { return _timerActive; }
-
 inline uint32_t breakTimerRemainingMs() {
   if (!_timerActive) return 0;
   uint32_t elapsed = millis() - _timerStartMs;
@@ -32,15 +30,29 @@ inline uint32_t breakTimerRemainingMs() {
   return BREAK_DURATION_MS - elapsed;
 }
 
-// ESP-NOW commands: a/single, a/double, a/long, b/single, b/double, b/long, reset
-// Portal legacy commands also accepted: a/inc, a/dec, b/inc, b/dec, nextset, reset
-// Returns true if the command was applied, false if read-only mode or nextset with tied score.
+inline bool isTimeoutActive() { return _timeoutActive; }
+inline uint32_t timeoutCountdownMs() {
+  if (!_timeoutActive) return 0;
+  uint32_t elapsed = millis() - _timeoutStartMs;
+  if (elapsed >= TIMEOUT_COUNTDOWN_MS) { _timeoutActive = false; return 0; }
+  return TIMEOUT_COUNTDOWN_MS - elapsed;
+}
+
 inline bool apply(const char* cmd) {
   if (Mode::isRead()) return false;
 
   xSemaphoreTake(scoreMutex, portMAX_DELAY);
 
-  // Any command during the break timer cancels it and resumes 0-0 without scoring
+  // Timeout command always wins: cancel break timer and start 60 s countdown
+  if (strcmp(cmd, "timeout") == 0) {
+    _timerActive    = false;
+    _timeoutActive  = true;
+    _timeoutStartMs = millis();
+    xSemaphoreGive(scoreMutex);
+    return true;
+  }
+
+  // Any other command cancels break timer without scoring
   if (_timerActive) {
     _timerActive = false;
     LED::update(currentScore);
@@ -48,9 +60,16 @@ inline bool apply(const char* cmd) {
     return true;
   }
 
+  // Any other command cancels timeout without scoring
+  if (_timeoutActive) {
+    _timeoutActive = false;
+    LED::update(currentScore);
+    xSemaphoreGive(scoreMutex);
+    return true;
+  }
+
   bool changed = true;
   bool ok      = true;
-
   const bool at00 = (currentScore.scoreA == 0 && currentScore.scoreB == 0);
   bool didIncrement = false;
   bool didNextSet   = false;

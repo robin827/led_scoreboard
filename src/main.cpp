@@ -173,11 +173,32 @@ void loop() {
     LED::rotationAnimation();
   }
 
-  // Break timer display (between sets)
+  // Timeout display: 60 s countdown with breathing "TIMEOUT" label (~30 fps for breathing)
+  static bool     prevTimeoutActive = false;
+  static uint32_t lastTimeoutUpdate = 0;
+  bool timeoutActive = ScoreActions::isTimeoutActive();
+
+  if (timeoutActive) {
+    uint32_t remaining = ScoreActions::timeoutCountdownMs();
+    uint32_t now       = millis();
+    if (remaining > 0 && now - lastTimeoutUpdate >= 33) {
+      lastTimeoutUpdate = now;
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      LED::showTimeoutDisplay(remaining);
+      xSemaphoreGive(scoreMutex);
+    }
+  } else if (prevTimeoutActive) {
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    LED::update(currentScore);
+    xSemaphoreGive(scoreMutex);
+  }
+  prevTimeoutActive = timeoutActive;
+
+  // Break timer display (between sets) — only when timeout is not active
   static bool     prevTimerActive = false;
   static uint32_t lastTimerUpdate = 0;
   uint32_t timerMs    = ScoreActions::breakTimerRemainingMs();
-  bool     timerActive = (timerMs > 0);
+  bool     timerActive = !timeoutActive && (timerMs > 0);
 
   if (timerActive) {
     uint32_t now = millis();
@@ -187,7 +208,7 @@ void loop() {
       LED::showBreakTimer(timerMs, true);
       xSemaphoreGive(scoreMutex);
     }
-  } else if (prevTimerActive) {
+  } else if (prevTimerActive && !timeoutActive) {
     xSemaphoreTake(scoreMutex, portMAX_DELAY);
     LED::update(currentScore);
     xSemaphoreGive(scoreMutex);
