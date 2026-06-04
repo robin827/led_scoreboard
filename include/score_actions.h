@@ -1,5 +1,6 @@
 #pragma once
 #include <string.h>
+#include <Preferences.h>
 #include "score.h"
 #include "led.h"
 #include "mode.h"
@@ -16,8 +17,60 @@ static uint32_t _timerStartMs     = 0;
 static bool     _timeoutActive    = false;
 static uint32_t _timeoutStartMs   = 0;
 
+// Battery saver
+static uint32_t        _lastActivityMs   = 0;
+static uint8_t         _dimTimeoutMin    = 5;
+static bool            _dimActive        = false;
+static volatile bool   _wantsWake        = false;
+static uint8_t         _preDimBrightness = 80;
+
 static constexpr uint32_t BREAK_DURATION_MS    = 3UL * 60UL * 1000UL;
 static constexpr uint32_t TIMEOUT_COUNTDOWN_MS = 60UL * 1000UL;
+
+inline void initBatterySaver() {
+  Preferences prefs;
+  prefs.begin("batsaver", true);
+  _dimTimeoutMin = prefs.getUChar("timeout", 5);
+  prefs.end();
+  _lastActivityMs = millis();
+}
+
+inline uint8_t getDimTimeoutMin() { return _dimTimeoutMin; }
+
+inline void setDimTimeoutMin(uint8_t mins) {
+  _dimTimeoutMin = mins;
+  Preferences prefs;
+  prefs.begin("batsaver", false);
+  prefs.putUChar("timeout", mins);
+  prefs.end();
+}
+
+// Call from any user interaction (safe from any core — no LED calls here)
+inline void notifyActivity() {
+  _lastActivityMs = millis();
+  if (_dimActive) _wantsWake = true;
+}
+
+// Call from main loop (Core 1) only — all LED changes happen here
+inline void tickBatterySaver() {
+  if (_wantsWake && _dimActive) {
+    _wantsWake = false;
+    _dimActive = false;
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    LED::setRawBrightness(_preDimBrightness);
+    xSemaphoreGive(scoreMutex);
+    return;
+  }
+  if (_dimTimeoutMin == 0 || _dimActive) return;
+  uint32_t timeoutMs = (uint32_t)_dimTimeoutMin * 60UL * 1000UL;
+  if (millis() - _lastActivityMs >= timeoutMs) {
+    _preDimBrightness = LED::getBrightness();
+    _dimActive = true;
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    LED::setRawBrightness(max((uint8_t)1, (uint8_t)(_preDimBrightness / 4)));
+    xSemaphoreGive(scoreMutex);
+  }
+}
 
 inline bool     getAndClearRotation() { bool r = _rotationPending; _rotationPending = false; return r; }
 inline uint32_t getRotationCount()    { return _rotationCount; }
@@ -38,9 +91,29 @@ inline uint32_t timeoutCountdownMs() {
   return TIMEOUT_COUNTDOWN_MS - elapsed;
 }
 
-inline bool apply(const char* cmd) {
-  if (Mode::isRead()) return false;
+// Apply a score received from Firebase (external change already detected by caller).
+// Checks for rotation boundary exactly as apply() does for local increments.
+inline void applyFromDatabase(const Score& db) {
+  notifyActivity();
+  xSemaphoreTake(scoreMutex, portMAX_DELAY);
 
+  int oldTotal = currentScore.scoreA + currentScore.scoreB;
+  int newTotal = db.scoreA + db.scoreB;
+  bool sameSet = (db.setA == currentScore.setA && db.setB == currentScore.setB);
+
+  currentScore = db;
+  LED::update(currentScore);
+
+  if (sameSet && newTotal > oldTotal && newTotal % 4 == 3) {
+    _rotationCount++;
+    _rotationPending = true;
+  }
+
+  xSemaphoreGive(scoreMutex);
+}
+
+inline bool apply(const char* cmd) {
+  notifyActivity();
   xSemaphoreTake(scoreMutex, portMAX_DELAY);
 
   // Timeout command always wins: cancel break timer and start 60 s countdown

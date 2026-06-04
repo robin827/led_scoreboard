@@ -171,10 +171,10 @@ inline bool readScore(Score& score) {
       if (prevIdxA >= 0 && prevIdxB >= 0) {
         int prevScoreA = payload.substring(prevIdxA + 15).toInt();
         int prevScoreB = payload.substring(prevIdxB + 15).toInt();
-        
-        if (prevScoreA >= 21 && (prevScoreA - prevScoreB) >= 2) {
+
+        if (prevScoreA > prevScoreB) {
           score.setA++;
-        } else if (prevScoreB >= 21 && (prevScoreB - prevScoreA) >= 2) {
+        } else if (prevScoreB > prevScoreA) {
           score.setB++;
         }
       }

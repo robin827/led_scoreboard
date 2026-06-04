@@ -416,6 +416,11 @@ inline void setBrightness(uint8_t brightness) {
 
 inline uint8_t getBrightness() { return FastLED.getBrightness(); }
 
+inline void setRawBrightness(uint8_t brightness) {
+  FastLED.setBrightness(constrain(brightness, 1, 255));
+  FastLED.show();
+}
+
 inline void update(const Score& score) {
   _animScore = score;
   _timerMode = false;

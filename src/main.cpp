@@ -20,91 +20,80 @@ SemaphoreHandle_t scoreMutex = NULL;
 TaskHandle_t firebaseTaskHandle = NULL;
 
 void firebaseTask(void* parameter) {
-  const uint32_t READ_INTERVAL_SUCCESS = Config::READ_INTERVAL;
-  const uint32_t READ_INTERVAL_ERROR = 15000;   // 15s si erreur
-  uint32_t lastRead = 0;
-  uint32_t currentInterval = READ_INTERVAL_SUCCESS;
-  uint8_t consecutiveErrors = 0;
-  const uint8_t MAX_CONSECUTIVE_ERRORS = 5;
-  
-  for(;;) {
-    WiFiMgr::tick();  // STA connection management on Core 0
+  const uint32_t INTERVAL_OK  = Config::READ_INTERVAL;
+  const uint32_t INTERVAL_ERR = 15000;
+  uint32_t lastRead          = 0;
+  uint32_t currentInterval   = INTERVAL_OK;
+  uint8_t  consecutiveErrors = 0;
+  const uint8_t MAX_ERRORS   = 5;
 
-    if (Mode::isRead() && WiFiMgr::isOnline()) {
+  // Track what we last successfully pushed so we can detect external changes on read
+  Score   lastWritten;
+  uint8_t lastWrittenWP = 255;  // 255 forces first write
+  uint8_t lastWrittenFS = 255;
+
+  for (;;) {
+    WiFiMgr::tick();
+
+    if (Mode::isSync() && WiFiMgr::isOnline()) {
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      Score local = currentScore;
+      xSemaphoreGive(scoreMutex);
+
+      // ── Push local changes to Firebase ───────────────────────────────────
+      if (local.scoreA != lastWritten.scoreA || local.scoreB != lastWritten.scoreB ||
+          local.setA   != lastWritten.setA   || local.setB   != lastWritten.setB) {
+        if (Firebase::writeScore(local)) {
+          lastWritten = local;
+          lastRead = millis();  // delay next read — give Firebase time to propagate
+        }
+      }
+      if (local.winPoints != lastWrittenWP) {
+        if (Firebase::writeWinPoints(local.winPoints)) lastWrittenWP = local.winPoints;
+      }
+      if (local.firstServer != lastWrittenFS) {
+        if (Firebase::writeFirstServer(local)) lastWrittenFS = local.firstServer;
+      }
+
+      // ── Periodically read Firebase for external changes ───────────────────
       uint32_t now = millis();
       if ((now - lastRead) >= currentInterval) {
         lastRead = now;
-        
-        // Pause si trop d'erreurs consécutives
-        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-          Serial.println("[Firebase] Too many errors, pausing for 30s");
+
+        if (consecutiveErrors >= MAX_ERRORS) {
+          Serial.println("[Firebase] Too many errors, pausing 30s");
           vTaskDelay(30000 / portTICK_PERIOD_MS);
           consecutiveErrors = 0;
           continue;
         }
-        
-        Serial.printf("[Firebase] Free heap before: %d\n", ESP.getFreeHeap());
-        
-        Score newScore = currentScore;
-        if (Firebase::readScore(newScore)) {
-          consecutiveErrors = 0;  // Reset sur succès
-          currentInterval = READ_INTERVAL_SUCCESS;
-          
-          if (newScore.scoreA      != currentScore.scoreA   ||
-              newScore.scoreB      != currentScore.scoreB   ||
-              newScore.setA        != currentScore.setA     ||
-              newScore.setB        != currentScore.setB     ||
-              newScore.firstServer != currentScore.firstServer ||
-              newScore.winPoints   != currentScore.winPoints) {
-            xSemaphoreTake(scoreMutex, portMAX_DELAY);
-            currentScore = newScore;
-            LED::update(currentScore);
-            xSemaphoreGive(scoreMutex);
+
+        Score db = local;
+        if (Firebase::readScore(db)) {
+          consecutiveErrors = 0;
+          currentInterval   = INTERVAL_OK;
+
+          // Apply only if DB differs from what we last wrote — means external source changed it
+          if (db.scoreA != lastWritten.scoreA || db.scoreB != lastWritten.scoreB ||
+              db.setA   != lastWritten.setA   || db.setB   != lastWritten.setB   ||
+              db.firstServer != lastWritten.firstServer ||
+              db.winPoints   != lastWritten.winPoints) {
+            ScoreActions::applyFromDatabase(db);
+            lastWritten   = db;  // now in sync with Firebase
+            lastWrittenWP = db.winPoints;
+            lastWrittenFS = db.firstServer;
           }
         } else {
           consecutiveErrors++;
-          currentInterval = READ_INTERVAL_ERROR;  // Ralentit sur erreur
-          Serial.printf("[Firebase] Error %d/%d, slowing down\n", 
-            consecutiveErrors, MAX_CONSECUTIVE_ERRORS);
-        }
-        
-        Serial.printf("[Firebase] Free heap after: %d\n", ESP.getFreeHeap());
-      }
-    } else if (Mode::isWrite() && WiFiMgr::isOnline()) {
-      // Write mode: push score and win_points to Firebase whenever they change
-      static Score   lastWritten;
-      static uint8_t lastWrittenWP  = 255;  // force first write
-      static uint8_t lastWrittenFS  = 255;  // force first write
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
-      Score toWrite = currentScore;
-      xSemaphoreGive(scoreMutex);
-
-      if (toWrite.scoreA != lastWritten.scoreA ||
-          toWrite.scoreB != lastWritten.scoreB ||
-          toWrite.setA   != lastWritten.setA   ||
-          toWrite.setB   != lastWritten.setB) {
-        if (Firebase::writeScore(toWrite)) {
-          lastWritten = toWrite;
-        }
-      }
-
-      if (toWrite.winPoints != lastWrittenWP) {
-        if (Firebase::writeWinPoints(toWrite.winPoints)) {
-          lastWrittenWP = toWrite.winPoints;
-        }
-      }
-
-      if (toWrite.firstServer != lastWrittenFS) {
-        if (Firebase::writeFirstServer(toWrite)) {
-          lastWrittenFS = toWrite.firstServer;
+          currentInterval = INTERVAL_ERR;
+          Serial.printf("[Firebase] Error %d/%d\n", consecutiveErrors, MAX_ERRORS);
         }
       }
     } else {
-      // LOCAL mode or offline — reset READ counters
+      // LOCAL or offline — reset error counters
       consecutiveErrors = 0;
-      currentInterval = READ_INTERVAL_SUCCESS;
+      currentInterval   = INTERVAL_OK;
     }
-    
+
     vTaskDelay(100 / portTICK_PERIOD_MS);
   }
 }
@@ -125,6 +114,7 @@ void setup() {
   // 1. Mode
   Serial.println("[1/5] Init Mode...");
   Mode::init();
+  ScoreActions::initBatterySaver();
 
   // 2. WiFi (AP + tentative STA)
   Serial.println("[2/5] Init WiFi...");
@@ -159,6 +149,7 @@ void setup() {
 void loop() {
   Portal::tick();
   EspNow::tick();
+  ScoreActions::tickBatterySaver();
 
   // Rotation animation: non-blocking 1.5 s wait so portal stays responsive,
   // then 2 s spinning blue comets (blocking is fine at that point — banner already shown)

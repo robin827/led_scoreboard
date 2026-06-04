@@ -263,11 +263,23 @@ select.input option{background:var(--elem)}
 
   <div class="settings">
     <div class="setting-group">
+      <label class="setting-label">Battery Saver</label>
+      <div class="mode-selector">
+        <button class="mode-btn" id="ds0"  onclick="setDimSleep(0)">Off<span class="mode-sub">always on</span></button>
+        <button class="mode-btn" id="ds5"  onclick="setDimSleep(5)">5 min<span class="mode-sub">auto-dim</span></button>
+        <button class="mode-btn" id="ds10" onclick="setDimSleep(10)">10 min<span class="mode-sub">auto-dim</span></button>
+        <button class="mode-btn" id="ds15" onclick="setDimSleep(15)">15 min<span class="mode-sub">auto-dim</span></button>
+      </div>
+      <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">Dims to 25% after inactivity. Any score action restores brightness.</div>
+    </div>
+  </div>
+
+  <div class="settings">
+    <div class="setting-group">
       <label class="setting-label">Mode</label>
       <div class="mode-selector">
         <button class="mode-btn" id="modeLocal" onclick="setMode(0)">Local<span class="mode-sub">standalone</span></button>
-        <button class="mode-btn" id="modeRead" onclick="setMode(1)">Read<span class="mode-sub">cloud&nbsp;→&nbsp;board</span></button>
-        <button class="mode-btn" id="modeWrite" onclick="setMode(2)">Write<span class="mode-sub">board&nbsp;→&nbsp;cloud</span></button>
+        <button class="mode-btn" id="modeSync" onclick="setMode(1)">Sync<span class="mode-sub">board&nbsp;↔&nbsp;cloud</span></button>
       </div>
       <div class="mode-hint" id="modeHint" style="display:none"></div>
     </div>
@@ -396,26 +408,17 @@ function confirmBoardIdSave() {
 
 function applyModeUI(mode, online) {
   document.getElementById('modeLocal').classList.toggle('active', mode === 0);
-  document.getElementById('modeRead').classList.toggle('active', mode === 1);
-  document.getElementById('modeWrite').classList.toggle('active', mode === 2);
+  document.getElementById('modeSync').classList.toggle('active', mode === 1);
   document.getElementById('channelGroup').style.display = mode !== 0 ? 'block' : 'none';
   document.getElementById('wifiGroup').style.display = mode !== 0 ? 'block' : 'none';
   const hint = document.getElementById('modeHint');
   const wifiLink = ' <a href="#" onclick="document.getElementById(\'wifiGroup\').scrollIntoView({behavior:\'smooth\'});return false" style="color:var(--a);text-decoration:none;font-weight:600">Connect below \u2193</a>';
   hint.style.display = 'block';
-  if (mode === 1) hint.innerHTML = 'Read mode: scores are pulled from the cloud. A WiFi connection is required.' + (!online ? wifiLink : '');
-  else if (mode === 2) hint.innerHTML = 'Write mode: scores are pushed on the cloud. Still works offline, syncs when connected.' + (!online ? wifiLink : '');
+  if (mode === 1) hint.innerHTML = 'Sync mode: score commands work locally and sync with the cloud in both directions. A WiFi connection is required.' + (!online ? wifiLink : '');
   else hint.innerHTML = 'Local mode: this phone communicates with the scoreboard locally. No internet required';
-  const readMode = mode === 1;
-  document.getElementById('controls').style.display = document.getElementById('actions').style.display = readMode ? 'none' : '';
-  document.querySelectorAll('.team-label').forEach(el => el.style.cursor = readMode ? 'default' : 'pointer');
-  const winSel = document.getElementById('winSelector');
-  winSel.style.opacity = readMode ? '0.4' : '1';
-  winSel.style.pointerEvents = readMode ? 'none' : '';
 }
 
 async function action(url, btn) {
-  if (currentMode === 1) return;
   if (btn) { btn.classList.add('flash'); setTimeout(() => btn.classList.remove('flash'), 150); }
   try {
     const r = await fetch(url, {method:'POST'});
@@ -425,7 +428,6 @@ async function action(url, btn) {
 }
 
 function startRepeat(url, btn) {
-  if (currentMode === 1) return;
   action(url, btn);
   _repeatStart = setTimeout(() => {
     _repeatTimer = setInterval(() => action(url), 180);
@@ -439,7 +441,6 @@ function stopRepeat() {
 }
 
 function startHold(btn, url) {
-  if (currentMode === 1) return;
   _holdBtn = btn;
   btn.classList.add('holding');
   _holdTimer = setTimeout(async () => {
@@ -504,6 +505,10 @@ async function refresh() {
         b.classList.toggle('active', parseInt(b.dataset.wp) === d.winPoints));
     }
 
+    if (d.dimSleep !== undefined) {
+      document.querySelectorAll('[id^="ds"]').forEach(b =>
+        b.classList.toggle('active', b.id === 'ds' + d.dimSleep));
+    }
 
     const hist = document.getElementById('setHistory');
     if (d.setsPlayed > 0 && d.histA && d.histB) {
@@ -555,7 +560,7 @@ async function refresh() {
     const btnDisc = document.getElementById('btnDisconnect');
     if (d.online && d.ssid) {
       _isConnecting = false;
-      indicator.style.display = d.mode === 0 ? 'flex' : 'none';
+      indicator.style.display = 'flex';
       document.getElementById('wifiIndicatorSSID').textContent = d.ssid;
       status.className = 'status-badge status-online';
       status.textContent = d.ssid + (d.rssi ? ' \u00b7 ' + d.rssi + ' dBm' : '');
@@ -593,8 +598,13 @@ async function setMatrixSize(v) {
   try { await fetch('/matrix', {method:'POST', body: String(v)}); refresh(); } catch(e) {}
 }
 
+async function setDimSleep(mins) {
+  document.querySelectorAll('[id^="ds"]').forEach(b =>
+    b.classList.toggle('active', b.id === 'ds' + mins));
+  try { await fetch('/dimsleep', {method:'POST', body: String(mins)}); } catch(e) {}
+}
+
 async function setFirstServer(who) {
-  if (currentMode === 1) return;
   try { await fetch('/serve/first', {method:'POST', body: String(who)}); refresh(); } catch(e) {}
 }
 
@@ -771,7 +781,7 @@ inline void init() {
     for (int i = 0; i < sSetA + sSetB && i < 3; i++) { if (i) json += ","; json += String(sHistA[i]); }
     json += "],\"histB\":[";
     for (int i = 0; i < sSetA + sSetB && i < 3; i++) { if (i) json += ","; json += String(sHistB[i]); }
-    json += "]";
+    json += "],\"dimSleep\":" + String(ScoreActions::getDimTimeoutMin());
     json += "}";
     server->send(200, "application/json", json);
   });
@@ -789,6 +799,7 @@ inline void init() {
   server->on("/reset",   HTTP_POST, []() { ScoreActions::apply("reset");   server->send(200, "text/plain", "OK"); });
 
   server->on("/serve/first", HTTP_POST, []() {
+    ScoreActions::notifyActivity();
     String body = server->arg("plain");
     xSemaphoreTake(scoreMutex, portMAX_DELAY);
     currentScore.firstServer = (body == "1") ? 1 : 0;
@@ -798,6 +809,7 @@ inline void init() {
   });
 
   server->on("/winpoints", HTTP_POST, []() {
+    ScoreActions::notifyActivity();
     if (server->hasArg("plain")) {
       int wp = server->arg("plain").toInt();
       if (wp >= 5 && wp <= 99) {
@@ -895,6 +907,7 @@ inline void init() {
   
   // Brightness
   server->on("/brightness", HTTP_POST, []() {
+    ScoreActions::notifyActivity();
     if (server->hasArg("plain")) {
       uint8_t brightness = constrain(server->arg("plain").toInt(), 1, 255);
       LED::setBrightness(brightness);  // Sauvegarde automatiquement en NVS
@@ -904,6 +917,18 @@ inline void init() {
     }
   });
   
+  // Battery saver timeout
+  server->on("/dimsleep", HTTP_POST, []() {
+    ScoreActions::notifyActivity();
+    if (server->hasArg("plain")) {
+      uint8_t mins = (uint8_t)constrain(server->arg("plain").toInt(), 0, 15);
+      ScoreActions::setDimTimeoutMin(mins);
+      server->send(200, "text/plain", "OK");
+    } else {
+      server->send(400, "text/plain", "Bad Request");
+    }
+  });
+
   // Redirection captive portal
   server->onNotFound([]() {
     server->sendHeader("Location", "/", true);
