@@ -18,11 +18,11 @@ static bool     _timeoutActive    = false;
 static uint32_t _timeoutStartMs   = 0;
 
 // Battery saver
-static uint32_t        _lastActivityMs   = 0;
-static uint8_t         _dimTimeoutMin    = 5;
-static bool            _dimActive        = false;
-static volatile bool   _wantsWake        = false;
-static uint8_t         _preDimBrightness = 80;
+static uint32_t        _lastActivityMs      = 0;
+static uint16_t        _dimTimeoutSec       = 300;
+static bool            _dimActive           = false;
+static volatile bool   _wantsWake           = false;
+static uint8_t         _preSleepBrightness  = 100;
 
 static constexpr uint32_t BREAK_DURATION_MS    = 3UL * 60UL * 1000UL;
 static constexpr uint32_t TIMEOUT_COUNTDOWN_MS = 60UL * 1000UL;
@@ -30,18 +30,24 @@ static constexpr uint32_t TIMEOUT_COUNTDOWN_MS = 60UL * 1000UL;
 inline void initBatterySaver() {
   Preferences prefs;
   prefs.begin("batsaver", true);
-  _dimTimeoutMin = prefs.getUChar("timeout", 5);
+  _dimTimeoutSec = prefs.getUShort("timeoutSec", 300);
   prefs.end();
   _lastActivityMs = millis();
 }
 
-inline uint8_t getDimTimeoutMin() { return _dimTimeoutMin; }
+inline uint16_t getDimTimeoutSec()       { return _dimTimeoutSec; }
+inline uint8_t  getPreSleepBrightness()  { return _preSleepBrightness; }
 
-inline void setDimTimeoutMin(uint8_t mins) {
-  _dimTimeoutMin = mins;
+inline void activateSleep() {
+  _preSleepBrightness = LED::getBrightness();
+  _dimActive = true;
+}
+
+inline void setDimTimeout(uint16_t secs) {
+  _dimTimeoutSec = secs;
   Preferences prefs;
   prefs.begin("batsaver", false);
-  prefs.putUChar("timeout", mins);
+  prefs.putUShort("timeoutSec", secs);
   prefs.end();
 }
 
@@ -51,24 +57,23 @@ inline void notifyActivity() {
   if (_dimActive) _wantsWake = true;
 }
 
+inline bool isDimActive() { return _dimActive; }
+
 // Call from main loop (Core 1) only — all LED changes happen here
 inline void tickBatterySaver() {
   if (_wantsWake && _dimActive) {
     _wantsWake = false;
     _dimActive = false;
     xSemaphoreTake(scoreMutex, portMAX_DELAY);
-    LED::setRawBrightness(_preDimBrightness);
+    LED::update(currentScore);
     xSemaphoreGive(scoreMutex);
     return;
   }
-  if (_dimTimeoutMin == 0 || _dimActive) return;
-  uint32_t timeoutMs = (uint32_t)_dimTimeoutMin * 60UL * 1000UL;
+  if (_dimTimeoutSec == 0 || _dimActive) return;
+  uint32_t timeoutMs = (uint32_t)_dimTimeoutSec * 1000UL;
   if (millis() - _lastActivityMs >= timeoutMs) {
-    _preDimBrightness = LED::getBrightness();
+    _preSleepBrightness = LED::getBrightness();
     _dimActive = true;
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
-    LED::setRawBrightness(max((uint8_t)1, (uint8_t)(_preDimBrightness / 4)));
-    xSemaphoreGive(scoreMutex);
   }
 }
 

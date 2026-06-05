@@ -218,8 +218,13 @@ select.input option{background:var(--elem)}
 
     <div class="actions" id="actions">
       <button class="btn" onclick="openModal('Next Set','Confirm the current set is over and start the next one.','modal-ok-yellow','/nextset')">Next Set</button>
-      <button class="btn" onclick="action('/timeout',this)">Timeout</button>
       <button class="btn" onclick="openModal('Reset Score','Reset all scores and sets. This cannot be undone.','modal-ok-red','/reset')">Reset</button>
+    </div>
+  </div>
+
+  <div class="settings">
+    <div class="setting-group">
+      <button class="btn" style="width:100%" onclick="action('/timeout',this)">Timeout</button>
     </div>
   </div>
 
@@ -253,24 +258,21 @@ select.input option{background:var(--elem)}
 
   <div class="settings">
     <div class="setting-group">
-      <label class="setting-label">LED Matrix</label>
-      <div class="mode-selector">
-        <button class="mode-btn" id="mat0" onclick="setMatrixSize(0)">24 × 8<span class="mode-sub">small</span></button>
-        <button class="mode-btn" id="mat1" onclick="setMatrixSize(1)">32 × 16<span class="mode-sub">large</span></button>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <label class="setting-label" style="margin:0">Battery Saver</label>
+        <button id="sleepBtn" data-sleeping="0" onclick="toggleSleep()" style="padding:6px 12px;background:var(--surface);color:var(--accent);border:1px solid var(--accent);border-radius:8px;font-size:0.8rem;cursor:pointer">Sleep now</button>
       </div>
-    </div>
-  </div>
-
-  <div class="settings">
-    <div class="setting-group">
-      <label class="setting-label">Battery Saver</label>
       <div class="mode-selector">
-        <button class="mode-btn" id="ds0"  onclick="setDimSleep(0)">Off<span class="mode-sub">always on</span></button>
-        <button class="mode-btn" id="ds5"  onclick="setDimSleep(5)">5 min<span class="mode-sub">auto-dim</span></button>
-        <button class="mode-btn" id="ds10" onclick="setDimSleep(10)">10 min<span class="mode-sub">auto-dim</span></button>
-        <button class="mode-btn" id="ds15" onclick="setDimSleep(15)">15 min<span class="mode-sub">auto-dim</span></button>
+        <button class="mode-btn" id="ds0"   onclick="setDimSleep(0)">Off<span class="mode-sub">always on</span></button>
+        <button class="mode-btn" id="ds300" onclick="setDimSleep(300)">5 min<span class="mode-sub">auto-dim</span></button>
+        <button class="mode-btn" id="ds600" onclick="setDimSleep(600)">10 min<span class="mode-sub">auto-dim</span></button>
+        <button class="mode-btn" id="ds900" onclick="setDimSleep(900)">15 min<span class="mode-sub">auto-dim</span></button>
       </div>
-      <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">Dims to 25% after inactivity. Any score action restores brightness.</div>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+        <input type="number" id="dimCustom" min="0" max="3600" placeholder="Custom (seconds)" style="flex:1;padding:8px 10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:0.85rem">
+        <button onclick="applyCustomDim()" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:8px;font-size:0.85rem;cursor:pointer;white-space:nowrap">Set</button>
+      </div>
+      <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">After inactivity, switches to a 2-dot breathing animation to save battery. Any score action wakes the display.</div>
     </div>
   </div>
 
@@ -282,6 +284,17 @@ select.input option{background:var(--elem)}
         <button class="mode-btn" id="modeSync" onclick="setMode(1)">Sync<span class="mode-sub">board&nbsp;↔&nbsp;cloud</span></button>
       </div>
       <div class="mode-hint" id="modeHint" style="display:none"></div>
+    </div>
+
+    <div class="setting-group" id="pollGroup" style="display:none">
+      <label class="setting-label">Sync interval</label>
+      <div class="mode-selector">
+        <button class="mode-btn" id="pi1" onclick="setPollInterval(1)">1 s<span class="mode-sub">live</span></button>
+        <button class="mode-btn" id="pi2" onclick="setPollInterval(2)">2 s<span class="mode-sub">fast</span></button>
+        <button class="mode-btn" id="pi3" onclick="setPollInterval(3)">3 s<span class="mode-sub">balanced</span></button>
+        <button class="mode-btn" id="pi5" onclick="setPollInterval(5)">5 s<span class="mode-sub">eco</span></button>
+      </div>
+      <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">How often to check Firebase for external updates. Higher = better battery life.</div>
     </div>
 
     <div class="setting-group" id="channelGroup" style="display:none">
@@ -409,8 +422,9 @@ function confirmBoardIdSave() {
 function applyModeUI(mode, online) {
   document.getElementById('modeLocal').classList.toggle('active', mode === 0);
   document.getElementById('modeSync').classList.toggle('active', mode === 1);
+  document.getElementById('pollGroup').style.display   = mode !== 0 ? 'block' : 'none';
   document.getElementById('channelGroup').style.display = mode !== 0 ? 'block' : 'none';
-  document.getElementById('wifiGroup').style.display = mode !== 0 ? 'block' : 'none';
+  document.getElementById('wifiGroup').style.display    = mode !== 0 ? 'block' : 'none';
   const hint = document.getElementById('modeHint');
   const wifiLink = ' <a href="#" onclick="document.getElementById(\'wifiGroup\').scrollIntoView({behavior:\'smooth\'});return false" style="color:var(--a);text-decoration:none;font-weight:600">Connect below \u2193</a>';
   hint.style.display = 'block';
@@ -485,9 +499,6 @@ async function refresh() {
     document.getElementById('lblA').className = 'team-label lbl-a' + (d.firstServer === 0 ? ' first-srv' : '');
     document.getElementById('lblB').className = 'team-label lbl-b' + (d.firstServer === 1 ? ' first-srv' : '');
 
-    document.getElementById('mat0').classList.toggle('active', !d.matrixLarge);
-    document.getElementById('mat1').classList.toggle('active',  d.matrixLarge);
-
     _online = d.online;
 
     if (!_switching) {
@@ -508,6 +519,11 @@ async function refresh() {
     if (d.dimSleep !== undefined) {
       document.querySelectorAll('[id^="ds"]').forEach(b =>
         b.classList.toggle('active', b.id === 'ds' + d.dimSleep));
+    }
+    if (d.sleeping !== undefined) _updateSleepBtn(d.sleeping);
+    if (d.pollInterval !== undefined) {
+      document.querySelectorAll('[id^="pi"]').forEach(b =>
+        b.classList.toggle('active', b.id === 'pi' + d.pollInterval));
     }
 
     const hist = document.getElementById('setHistory');
@@ -592,16 +608,36 @@ function showPage(id) {
   document.body.classList.toggle('top-align', id === 'pageSettings');
 }
 
-async function setMatrixSize(v) {
-  document.getElementById('mat0').classList.toggle('active', v === 0);
-  document.getElementById('mat1').classList.toggle('active', v === 1);
-  try { await fetch('/matrix', {method:'POST', body: String(v)}); refresh(); } catch(e) {}
+async function setDimSleep(secs) {
+  document.querySelectorAll('[id^="ds"]').forEach(b =>
+    b.classList.toggle('active', b.id === 'ds' + secs));
+  try { await fetch('/dimsleep', {method:'POST', body: String(secs)}); } catch(e) {}
 }
 
-async function setDimSleep(mins) {
-  document.querySelectorAll('[id^="ds"]').forEach(b =>
-    b.classList.toggle('active', b.id === 'ds' + mins));
-  try { await fetch('/dimsleep', {method:'POST', body: String(mins)}); } catch(e) {}
+function applyCustomDim() {
+  const v = parseInt(document.getElementById('dimCustom').value);
+  if (!isNaN(v) && v >= 0) setDimSleep(v);
+}
+
+function _updateSleepBtn(sleeping) {
+  const btn = document.getElementById('sleepBtn');
+  if (!btn) return;
+  btn.dataset.sleeping = sleeping ? '1' : '0';
+  btn.textContent = sleeping ? 'Wake up' : 'Sleep now';
+  btn.style.background = sleeping ? 'var(--accent)' : 'var(--surface)';
+  btn.style.color      = sleeping ? 'var(--bg)'     : 'var(--accent)';
+}
+
+async function toggleSleep() {
+  const sleeping = document.getElementById('sleepBtn').dataset.sleeping === '1';
+  _updateSleepBtn(!sleeping);  // optimistic update
+  try { await fetch(sleeping ? '/wake' : '/sleepnow', {method:'POST'}); } catch(e) { refresh(); }
+}
+
+async function setPollInterval(secs) {
+  document.querySelectorAll('[id^="pi"]').forEach(b =>
+    b.classList.toggle('active', b.id === 'pi' + secs));
+  try { await fetch('/pollinterval', {method:'POST', body: String(secs)}); } catch(e) {}
 }
 
 async function setFirstServer(who) {
@@ -768,7 +804,6 @@ inline void init() {
     json += "\"mode\":" + String((int)Mode::get()) + ",";
     json += "\"channel\":\"" + Firebase::getChannel() + "\",";
     json += "\"brightness\":" + String(LED::getBrightness()) + ",";
-    json += "\"matrixLarge\":" + String(LED::isMatrixLarge() ? "true" : "false") + ",";
     json += "\"online\":" + String(WiFiMgr::isOnline() ? "true" : "false") + ",";
     json += "\"ssid\":\"" + WiFiMgr::getSSID() + "\",";
     json += "\"rssi\":" + String(WiFiMgr::getRSSI()) + ",";
@@ -781,7 +816,9 @@ inline void init() {
     for (int i = 0; i < sSetA + sSetB && i < 3; i++) { if (i) json += ","; json += String(sHistA[i]); }
     json += "],\"histB\":[";
     for (int i = 0; i < sSetA + sSetB && i < 3; i++) { if (i) json += ","; json += String(sHistB[i]); }
-    json += "],\"dimSleep\":" + String(ScoreActions::getDimTimeoutMin());
+    json += "],\"dimSleep\":" + String(ScoreActions::getDimTimeoutSec());
+    json += ",\"sleeping\":" + String(ScoreActions::isDimActive() ? "true" : "false");
+    json += ",\"pollInterval\":" + String(Firebase::getPollIntervalSec());
     json += "}";
     server->send(200, "application/json", json);
   });
@@ -833,17 +870,7 @@ inline void init() {
     server->send(200, "text/plain", "OK");
   });
 
-  // Matrix size
-  server->on("/matrix", HTTP_POST, []() {
-    if (server->hasArg("plain")) {
-      bool large = (server->arg("plain") == "1");
-      LED::setMatrix(large);
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
-      LED::update(currentScore);
-      xSemaphoreGive(scoreMutex);
-    }
-    server->send(200, "text/plain", "OK");
-  });
+
 
   // Mode
   server->on("/mode", HTTP_POST, []() {
@@ -917,16 +944,37 @@ inline void init() {
     }
   });
   
-  // Battery saver timeout
-  server->on("/dimsleep", HTTP_POST, []() {
-    ScoreActions::notifyActivity();
+  // Firebase poll interval
+  server->on("/pollinterval", HTTP_POST, []() {
     if (server->hasArg("plain")) {
-      uint8_t mins = (uint8_t)constrain(server->arg("plain").toInt(), 0, 15);
-      ScoreActions::setDimTimeoutMin(mins);
+      int secs = constrain(server->arg("plain").toInt(), 1, 60);
+      Firebase::setPollInterval((uint16_t)secs);
       server->send(200, "text/plain", "OK");
     } else {
       server->send(400, "text/plain", "Bad Request");
     }
+  });
+
+  // Battery saver timeout
+  server->on("/dimsleep", HTTP_POST, []() {
+    ScoreActions::notifyActivity();
+    if (server->hasArg("plain")) {
+      uint16_t secs = (uint16_t)constrain(server->arg("plain").toInt(), 0, 3600);
+      ScoreActions::setDimTimeout(secs);
+      server->send(200, "text/plain", "OK");
+    } else {
+      server->send(400, "text/plain", "Bad Request");
+    }
+  });
+
+  server->on("/sleepnow", HTTP_POST, []() {
+    ScoreActions::activateSleep();
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/wake", HTTP_POST, []() {
+    ScoreActions::notifyActivity();
+    server->send(200, "text/plain", "OK");
   });
 
   // Redirection captive portal
@@ -962,7 +1010,7 @@ inline void init() {
 inline void tick() {
   dns.processNextRequest();
   server->handleClient();
-  LED::tick();
+  if (!ScoreActions::isDimActive()) LED::tick();
 }
 
 } // namespace Portal

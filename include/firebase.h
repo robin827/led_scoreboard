@@ -14,8 +14,9 @@
 namespace Firebase {
 
 static Preferences _prefs;
-static String _channelCache = "";
-static bool _channelLoaded = false;
+static String   _channelCache      = "";
+static bool     _channelLoaded     = false;
+static uint16_t _pollIntervalSec   = 3;
 
 // Shared SSL client — reused across read and write to avoid memory leaks
 static WiFiClientSecure* _client = nullptr;
@@ -43,6 +44,23 @@ inline void setChannel(const String& matchId) {
   _prefs.putString("channel", matchId);
   _prefs.end();
   Serial.printf("[Firebase] Channel set: %s\n", matchId.c_str());
+}
+
+inline void loadPollInterval() {
+  _prefs.begin("firebase", true);
+  _pollIntervalSec = _prefs.getUShort("pollInt", 3);
+  _prefs.end();
+}
+
+inline uint32_t getPollIntervalMs()  { return (uint32_t)_pollIntervalSec * 1000UL; }
+inline uint16_t getPollIntervalSec() { return _pollIntervalSec; }
+
+inline void setPollInterval(uint16_t secs) {
+  _pollIntervalSec = secs;
+  _prefs.begin("firebase", false);
+  _prefs.putUShort("pollInt", secs);
+  _prefs.end();
+  Serial.printf("[Firebase] Poll interval: %ds\n", secs);
 }
 
 inline String getChannel() {

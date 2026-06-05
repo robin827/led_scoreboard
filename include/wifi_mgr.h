@@ -66,6 +66,7 @@ static void _onEvent(WiFiEvent_t event) {
   switch (event) {
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       _online = true; _connecting = false;
+      WiFi.setSleep(true);  // modem sleep: radio idles between transmissions
       Serial.printf("[WiFi] Connected — STA: %s | AP: %s\n",
         WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str());
       break;
@@ -114,6 +115,7 @@ inline void init() {
   WiFi.persistent(false);         // credentials managed by NVS, not the SDK
   WiFi.setAutoReconnect(false);   // we manage retries ourselves via tick()
   WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(true);  // modem sleep enabled from the start
   WiFi.softAP(_scoreboardId.c_str(), AP_PASSWORD);
   delay(500);
   Serial.printf("[WiFi] AP started: %s | IP: %s\n",

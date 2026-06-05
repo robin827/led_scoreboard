@@ -20,14 +20,11 @@ SemaphoreHandle_t scoreMutex = NULL;
 TaskHandle_t firebaseTaskHandle = NULL;
 
 void firebaseTask(void* parameter) {
-  const uint32_t INTERVAL_OK  = Config::READ_INTERVAL;
   const uint32_t INTERVAL_ERR = 15000;
   uint32_t lastRead          = 0;
-  uint32_t currentInterval   = INTERVAL_OK;
   uint8_t  consecutiveErrors = 0;
   const uint8_t MAX_ERRORS   = 5;
 
-  // Track what we last successfully pushed so we can detect external changes on read
   Score   lastWritten;
   uint8_t lastWrittenWP = 255;  // 255 forces first write
   uint8_t lastWrittenFS = 255;
@@ -56,42 +53,43 @@ void firebaseTask(void* parameter) {
       }
 
       // ── Periodically read Firebase for external changes ───────────────────
-      uint32_t now = millis();
-      if ((now - lastRead) >= currentInterval) {
-        lastRead = now;
+      // Interval: error back-off → user-configured rate (same during sleep so external
+      // score changes wake the device promptly — LED savings already come from the animation)
+      if (consecutiveErrors >= MAX_ERRORS) {
+        Serial.println("[Firebase] Too many errors, pausing 30s");
+        vTaskDelay(30000 / portTICK_PERIOD_MS);
+        consecutiveErrors = 0;
+        continue;
+      }
 
-        if (consecutiveErrors >= MAX_ERRORS) {
-          Serial.println("[Firebase] Too many errors, pausing 30s");
-          vTaskDelay(30000 / portTICK_PERIOD_MS);
-          consecutiveErrors = 0;
-          continue;
-        }
+      uint32_t targetInterval = consecutiveErrors > 0 ? INTERVAL_ERR
+                              : Firebase::getPollIntervalMs();
+
+      uint32_t now = millis();
+      if ((now - lastRead) >= targetInterval) {
+        lastRead = now;
 
         Score db = local;
         if (Firebase::readScore(db)) {
           consecutiveErrors = 0;
-          currentInterval   = INTERVAL_OK;
 
-          // Apply only if DB differs from what we last wrote — means external source changed it
           if (db.scoreA != lastWritten.scoreA || db.scoreB != lastWritten.scoreB ||
               db.setA   != lastWritten.setA   || db.setB   != lastWritten.setB   ||
               db.firstServer != lastWritten.firstServer ||
               db.winPoints   != lastWritten.winPoints) {
             ScoreActions::applyFromDatabase(db);
-            lastWritten   = db;  // now in sync with Firebase
+            lastWritten   = db;
             lastWrittenWP = db.winPoints;
             lastWrittenFS = db.firstServer;
           }
         } else {
           consecutiveErrors++;
-          currentInterval = INTERVAL_ERR;
           Serial.printf("[Firebase] Error %d/%d\n", consecutiveErrors, MAX_ERRORS);
         }
       }
     } else {
       // LOCAL or offline — reset error counters
       consecutiveErrors = 0;
-      currentInterval   = INTERVAL_OK;
     }
 
     vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -115,6 +113,7 @@ void setup() {
   Serial.println("[1/5] Init Mode...");
   Mode::init();
   ScoreActions::initBatterySaver();
+  Firebase::loadPollInterval();
 
   // 2. WiFi (AP + tentative STA)
   Serial.println("[2/5] Init WiFi...");
@@ -150,6 +149,20 @@ void loop() {
   Portal::tick();
   EspNow::tick();
   ScoreActions::tickBatterySaver();
+
+  // Sleep animation: replaces all display logic while inactive
+  if (ScoreActions::isDimActive()) {
+    static uint32_t _lastSleepFrame = 0;
+    uint32_t _now = millis();
+    if (_now - _lastSleepFrame >= 33) {
+      _lastSleepFrame = _now;
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      LED::showSleepAnimation(ScoreActions::getPreSleepBrightness());
+      xSemaphoreGive(scoreMutex);
+    }
+    delay(10);
+    return;
+  }
 
   // Rotation animation: non-blocking 1.5 s wait so portal stays responsive,
   // then 2 s spinning blue comets (blocking is fine at that point — banner already shown)
