@@ -27,9 +27,15 @@ static void _onReceive(const uint8_t* mac, const uint8_t* data, int len) {
   char cmd[17];
   memcpy(cmd, data, len);
   cmd[len] = '\0';
+  // Ignore beacon strings — our own broadcast or a nearby scoreboard
+  if (strncmp(cmd, "SCORE:", 6) == 0) {
+    Serial.printf("[ESP-NOW] ignored beacon: '%s'\n", cmd);
+    return;
+  }
   Serial.printf("[ESP-NOW] cmd='%s'\n", cmd);
   bool ok = ScoreActions::apply(cmd);
   Serial.printf("[ESP-NOW] apply result: ok=%d\n", ok);
+  if (ok) WsClient::requestPush();
 }
 
 inline void init() {

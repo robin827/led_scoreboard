@@ -11,7 +11,6 @@
 #include <WiFi.h>
 #include <Preferences.h>
 #include "config.h"
-#include "mode.h"
 
 namespace WiFiMgr {
 
@@ -66,6 +65,7 @@ static void _onEvent(WiFiEvent_t event) {
   switch (event) {
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       _online = true; _connecting = false;
+      WiFi.setSleep(false);  // modem sleep disabled — ESP-NOW drops packets when radio is sleeping
       Serial.printf("[WiFi] Connected — STA: %s | AP: %s\n",
         WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str());
       break;
@@ -138,7 +138,7 @@ inline void tick() {
   }
 
   // Constant 15s retry — skip in LOCAL mode or while already connecting
-  if (_online || _connecting || Mode::isLocal()) return;
+  if (_online || _connecting) return;
   if (!_credsCached || _cachedSsid.length() == 0) return;
   if ((millis() - _lastRetryTime) < 25000u) return;
 

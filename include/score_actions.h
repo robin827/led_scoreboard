@@ -3,7 +3,6 @@
 #include <Preferences.h>
 #include "score.h"
 #include "led.h"
-#include "mode.h"
 
 extern Score currentScore;
 extern SemaphoreHandle_t scoreMutex;
@@ -96,27 +95,6 @@ inline uint32_t timeoutCountdownMs() {
   return TIMEOUT_COUNTDOWN_MS - elapsed;
 }
 
-// Apply a score received from Firebase (external change already detected by caller).
-// Checks for rotation boundary exactly as apply() does for local increments.
-inline void applyFromDatabase(const Score& db) {
-  notifyActivity();
-  xSemaphoreTake(scoreMutex, portMAX_DELAY);
-
-  int oldTotal = currentScore.scoreA + currentScore.scoreB;
-  int newTotal = db.scoreA + db.scoreB;
-  bool sameSet = (db.setA == currentScore.setA && db.setB == currentScore.setB);
-
-  currentScore = db;
-  LED::update(currentScore);
-
-  if (sameSet && newTotal > oldTotal && newTotal % 4 == 3) {
-    _rotationCount++;
-    _rotationPending = true;
-  }
-
-  xSemaphoreGive(scoreMutex);
-}
-
 inline bool apply(const char* cmd) {
   notifyActivity();
   xSemaphoreTake(scoreMutex, portMAX_DELAY);
@@ -130,7 +108,18 @@ inline bool apply(const char* cmd) {
     return true;
   }
 
-  // Any other command cancels break timer without scoring
+  // Only known game commands cancel active timers — unknown strings are silently ignored
+  bool isKnown =
+      strncmp(cmd, "a/", 2) == 0 ||
+      strncmp(cmd, "b/", 2) == 0 ||
+      strcmp(cmd, "nextset") == 0 ||
+      strcmp(cmd, "reset")   == 0;
+  if (!isKnown) {
+    xSemaphoreGive(scoreMutex);
+    return false;
+  }
+
+  // Known game command cancels break timer without scoring
   if (_timerActive) {
     _timerActive = false;
     LED::update(currentScore);
@@ -138,7 +127,7 @@ inline bool apply(const char* cmd) {
     return true;
   }
 
-  // Any other command cancels timeout without scoring
+  // Known game command cancels timeout without scoring
   if (_timeoutActive) {
     _timeoutActive = false;
     LED::update(currentScore);

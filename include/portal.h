@@ -9,11 +9,10 @@
 #include <DNSServer.h>
 #include "score.h"
 #include "led.h"
-#include "mode.h"
 #include "wifi_mgr.h"
-#include "firebase.h"
 #include "score_actions.h"
 #include <ArduinoJson.h>
+#include "ws_client.h"
 
 namespace Portal {
 
@@ -236,6 +235,13 @@ select.input option{background:var(--elem)}
     </div>
   </div>
 
+  <div class="settings">
+    <div class="setting-group">
+      <button class="btn" style="width:100%;background:rgba(var(--b-rgb),0.1);color:var(--b);border:1px solid rgba(var(--b-rgb),0.3)"
+        onclick="openModal('Sleep','Put the scoreboard to sleep?','modal-ok-red','/sleepnow')">Sleep</button>
+    </div>
+  </div>
+
 </div><!-- /pageMain -->
 
 <div id="pageSettings" class="page">
@@ -277,39 +283,20 @@ select.input option{background:var(--elem)}
   </div>
 
   <div class="settings">
-    <div class="setting-group">
-      <label class="setting-label">Mode</label>
-      <div class="mode-selector">
-        <button class="mode-btn" id="modeLocal" onclick="setMode(0)">Local<span class="mode-sub">standalone</span></button>
-        <button class="mode-btn" id="modeSync" onclick="setMode(1)">Sync<span class="mode-sub">board&nbsp;↔&nbsp;cloud</span></button>
-      </div>
-      <div class="mode-hint" id="modeHint" style="display:none"></div>
-    </div>
-
-    <div class="setting-group" id="pollGroup" style="display:none">
-      <label class="setting-label">Sync interval</label>
-      <div class="mode-selector">
-        <button class="mode-btn" id="pi1" onclick="setPollInterval(1)">1 s<span class="mode-sub">live</span></button>
-        <button class="mode-btn" id="pi2" onclick="setPollInterval(2)">2 s<span class="mode-sub">fast</span></button>
-        <button class="mode-btn" id="pi3" onclick="setPollInterval(3)">3 s<span class="mode-sub">balanced</span></button>
-        <button class="mode-btn" id="pi5" onclick="setPollInterval(5)">5 s<span class="mode-sub">eco</span></button>
-      </div>
-      <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">How often to check Firebase for external updates. Higher = better battery life.</div>
-    </div>
-
-    <div class="setting-group" id="channelGroup" style="display:none">
-      <label class="setting-label">Channel (Match ID)</label>
-      <select class="input" id="channel" onchange="saveChannel()">
-        <option value="">— Select channel —</option>
-        <option value="1">Match 1</option><option value="2">Match 2</option><option value="3">Match 3</option><option value="4">Match 4</option><option value="5">Match 5</option><option value="6">Match 6</option><option value="7">Match 7</option><option value="8">Match 8</option><option value="9">Match 9</option><option value="10">Match 10</option><option value="11">Match 11</option><option value="12">Match 12</option><option value="13">Match 13</option><option value="14">Match 14</option><option value="15">Match 15</option><option value="16">Match 16</option><option value="17">Match 17</option><option value="18">Match 18</option><option value="19">Match 19</option><option value="20">Match 20</option>
-      </select>
-    </div>
-
-    <div class="setting-group" id="wifiGroup" style="display:none">
+    <div class="setting-group" id="wifiGroup">
       <label class="setting-label">WiFi <span id="wifiStatus" class="status-badge status-offline">Offline</span></label>
       <button class="btn btn-scan" id="btnScan" onclick="scanWiFi()">Scan Networks</button>
       <div class="network-list" id="networkList" style="display:none"></div>
       <button class="btn-disconnect" id="btnDisconnect" style="display:none" onclick="disconnectWiFi()">Disconnect from <span id="connectedSSID"></span></button>
+    </div>
+
+    <div class="setting-group">
+      <label class="setting-label">Central Server <span id="wsStatus" class="status-badge status-offline">Disconnected</span></label>
+      <div style="display:flex;gap:8px">
+        <input type="text" class="input" id="serverIp" placeholder="e.g. 192.168.1.100" oninput="_serverIpDirty=true">
+        <button class="btn" style="background:var(--a);color:var(--bg);padding:12px 16px;font-size:0.85rem;white-space:nowrap;border-radius:8px" onclick="saveServerIp()">Save</button>
+      </div>
+      <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">WebSocket server IP for central scoreboard management. Leave empty to disable.</div>
     </div>
   </div>
 
@@ -338,10 +325,7 @@ function showToast(msg) {
   _toastTimer = setTimeout(() => { t.remove(); _toastTimer = null; }, 2500);
 }
 
-let currentMode = 0;
-let _online = false;
 let _isConnecting = false;
-let _switching = false;
 let _repeatTimer = null, _repeatStart = null;
 let _pendingAction = null;
 let _pendingCallback = null;
@@ -419,19 +403,6 @@ function confirmBoardIdSave() {
   );
 }
 
-function applyModeUI(mode, online) {
-  document.getElementById('modeLocal').classList.toggle('active', mode === 0);
-  document.getElementById('modeSync').classList.toggle('active', mode === 1);
-  document.getElementById('pollGroup').style.display   = mode !== 0 ? 'block' : 'none';
-  document.getElementById('channelGroup').style.display = mode !== 0 ? 'block' : 'none';
-  document.getElementById('wifiGroup').style.display    = mode !== 0 ? 'block' : 'none';
-  const hint = document.getElementById('modeHint');
-  const wifiLink = ' <a href="#" onclick="document.getElementById(\'wifiGroup\').scrollIntoView({behavior:\'smooth\'});return false" style="color:var(--a);text-decoration:none;font-weight:600">Connect below \u2193</a>';
-  hint.style.display = 'block';
-  if (mode === 1) hint.innerHTML = 'Sync mode: score commands work locally and sync with the cloud in both directions. A WiFi connection is required.' + (!online ? wifiLink : '');
-  else hint.innerHTML = 'Local mode: this phone communicates with the scoreboard locally. No internet required';
-}
-
 async function action(url, btn) {
   if (btn) { btn.classList.add('flash'); setTimeout(() => btn.classList.remove('flash'), 150); }
   try {
@@ -499,18 +470,10 @@ async function refresh() {
     document.getElementById('lblA').className = 'team-label lbl-a' + (d.firstServer === 0 ? ' first-srv' : '');
     document.getElementById('lblB').className = 'team-label lbl-b' + (d.firstServer === 1 ? ' first-srv' : '');
 
-    _online = d.online;
-
-    if (!_switching) {
-      currentMode = d.mode;
-      applyModeUI(d.mode, d.online);
-    }
-
     if (d.boardId && !_boardIdDirty) {
       document.getElementById('boardId').value = d.boardId;
       document.getElementById('pageTitle').textContent = d.boardId;
     }
-    if (d.channel) document.getElementById('channel').value = d.channel;
     if (d.winPoints) {
       document.querySelectorAll('.win-btn').forEach(b =>
         b.classList.toggle('active', parseInt(b.dataset.wp) === d.winPoints));
@@ -521,11 +484,12 @@ async function refresh() {
         b.classList.toggle('active', b.id === 'ds' + d.dimSleep));
     }
     if (d.sleeping !== undefined) _updateSleepBtn(d.sleeping);
-    if (d.pollInterval !== undefined) {
-      document.querySelectorAll('[id^="pi"]').forEach(b =>
-        b.classList.toggle('active', b.id === 'pi' + d.pollInterval));
+    if (d.serverIp !== undefined && !_serverIpDirty) document.getElementById('serverIp').value = d.serverIp;
+    if (d.wsConnected !== undefined) {
+      const ws = document.getElementById('wsStatus');
+      ws.className = 'status-badge ' + (d.wsConnected ? 'status-online' : 'status-offline');
+      ws.textContent = d.wsConnected ? 'Connected' : 'Disconnected';
     }
-
     const hist = document.getElementById('setHistory');
     if (d.setsPlayed > 0 && d.histA && d.histB) {
       hist.style.display = 'flex';
@@ -634,32 +598,8 @@ async function toggleSleep() {
   try { await fetch(sleeping ? '/wake' : '/sleepnow', {method:'POST'}); } catch(e) { refresh(); }
 }
 
-async function setPollInterval(secs) {
-  document.querySelectorAll('[id^="pi"]').forEach(b =>
-    b.classList.toggle('active', b.id === 'pi' + secs));
-  try { await fetch('/pollinterval', {method:'POST', body: String(secs)}); } catch(e) {}
-}
-
 async function setFirstServer(who) {
   try { await fetch('/serve/first', {method:'POST', body: String(who)}); refresh(); } catch(e) {}
-}
-
-async function setMode(mode) {
-  _switching = true;
-  currentMode = mode;
-  applyModeUI(mode, _online);
-  try {
-    await fetch('/mode', {method:'POST', body: String(mode)});
-  } catch(e) {}
-  finally { _switching = false; }
-  await refresh();
-  if (mode !== 0 && !_online) {
-    document.getElementById('wifiGroup').scrollIntoView({behavior:'smooth'});
-  }
-}
-
-async function saveChannel() {
-  try { await fetch('/channel', {method:'POST', body: document.getElementById('channel').value}); } catch(e) {}
 }
 
 async function scanWiFi() {
@@ -742,6 +682,7 @@ function disconnectWiFi() {
 let _brightnessTimer = null;
 let _brightnessDirty = false;
 let _boardIdDirty = false;
+let _serverIpDirty = false;
 async function saveBoardId() {
   const val = document.getElementById('boardId').value.trim();
   if (val.length === 0) return;
@@ -759,6 +700,11 @@ function setBrightness(val) {
     try { await fetch('/brightness', {method:'POST', body: val}); } catch(e) {}
     _brightnessDirty = false;
   }, 300);
+}
+
+async function saveServerIp() {
+  const val = document.getElementById('serverIp').value.trim();
+  try { await fetch('/serverip', {method:'POST', body: val}); _serverIpDirty = false; } catch(e) {}
 }
 
 setInterval(refresh, 2000);
@@ -801,8 +747,6 @@ inline void init() {
     json += "\"servesLeft\":" + String(srv.servesLeft) + ",";
     json += "\"serveTotal\":" + String(srv.serveTotal) + ",";
     json += "\"winPoints\":" + String(currentScore.winPoints) + ",";
-    json += "\"mode\":" + String((int)Mode::get()) + ",";
-    json += "\"channel\":\"" + Firebase::getChannel() + "\",";
     json += "\"brightness\":" + String(LED::getBrightness()) + ",";
     json += "\"online\":" + String(WiFiMgr::isOnline() ? "true" : "false") + ",";
     json += "\"ssid\":\"" + WiFiMgr::getSSID() + "\",";
@@ -818,7 +762,8 @@ inline void init() {
     for (int i = 0; i < sSetA + sSetB && i < 3; i++) { if (i) json += ","; json += String(sHistB[i]); }
     json += "],\"dimSleep\":" + String(ScoreActions::getDimTimeoutSec());
     json += ",\"sleeping\":" + String(ScoreActions::isDimActive() ? "true" : "false");
-    json += ",\"pollInterval\":" + String(Firebase::getPollIntervalSec());
+    json += ",\"serverIp\":\"" + WsClient::getServerIp() + "\"";
+    json += ",\"wsConnected\":" + String(WsClient::isConnected() ? "true" : "false");
     json += "}";
     server->send(200, "application/json", json);
   });
@@ -872,27 +817,6 @@ inline void init() {
 
 
 
-  // Mode
-  server->on("/mode", HTTP_POST, []() {
-    if (server->hasArg("plain")) {
-      int mode = server->arg("plain").toInt();
-      Mode::set((AppMode)mode);
-      server->send(200, "text/plain", "OK");
-    } else {
-      server->send(400, "text/plain", "Bad Request");
-    }
-  });
-  
-  // Channel
-  server->on("/channel", HTTP_POST, []() {
-    if (server->hasArg("plain")) {
-      Firebase::setChannel(server->arg("plain"));
-      server->send(200, "text/plain", "OK");
-    } else {
-      server->send(400, "text/plain", "Bad Request");
-    }
-  });
-  
   // WiFi scan
   server->on("/wifi/scan", HTTP_GET, []() {
     String json = WiFiMgr::scanNetworks();
@@ -944,17 +868,6 @@ inline void init() {
     }
   });
   
-  // Firebase poll interval
-  server->on("/pollinterval", HTTP_POST, []() {
-    if (server->hasArg("plain")) {
-      int secs = constrain(server->arg("plain").toInt(), 1, 60);
-      Firebase::setPollInterval((uint16_t)secs);
-      server->send(200, "text/plain", "OK");
-    } else {
-      server->send(400, "text/plain", "Bad Request");
-    }
-  });
-
   // Battery saver timeout
   server->on("/dimsleep", HTTP_POST, []() {
     ScoreActions::notifyActivity();
@@ -974,6 +887,14 @@ inline void init() {
 
   server->on("/wake", HTTP_POST, []() {
     ScoreActions::notifyActivity();
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/serverip", HTTP_POST, []() {
+    String ip = server->hasArg("plain") ? server->arg("plain") : "";
+    ip.trim();
+    WsClient::saveServerIp(ip);
+    WsClient::init(ip);
     server->send(200, "text/plain", "OK");
   });
 
