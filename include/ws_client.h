@@ -32,14 +32,17 @@ static uint16_t      _serverPort  = 8080;
 static bool          _connected   = false;
 static bool          _initialized = false;
 static unsigned long _lastAttempt = 0;
-static unsigned long _wifiLostAt  = 0;
-static bool          _wifiWas     = true;
+static bool          _wifiWas          = false;
+static bool          _wifiEverConnected = false;
 static volatile bool _needsPush   = false;
 static unsigned long _lastPush    = 0;
 
-static constexpr unsigned long RECONNECT_MS   = 5000;
-static constexpr unsigned long WIFI_REBOOT_MS = 30000;
-static constexpr unsigned long HEARTBEAT_MS   = 3000;
+static constexpr unsigned long RECONNECT_MS  = 5000;
+static constexpr unsigned long RECONNECT_MAX = 300000; // 5 min cap after repeated failures
+static constexpr unsigned long HEARTBEAT_MS  = 3000;
+static unsigned int      _failCount     = 0;
+static unsigned long     _nextReconnect = RECONNECT_MS;
+static volatile bool     _connecting    = false;
 
 // ── NVS ──────────────────────────────────────────────────────────────────────
 
@@ -91,6 +94,7 @@ inline void pushState() {
   doc["brightness"]= LED::getBrightness();
   doc["uptime"]    = (unsigned long)(esp_timer_get_time() / 1000000ULL);
   doc["mode"]      = "central";
+  doc["hardcap"]   = s.hardcap;
   doc["setA"]      = s.setA;
   doc["setB"]      = s.setB;
   doc["timeoutMs"] = ScoreActions::timeoutCountdownMs();
@@ -169,6 +173,13 @@ static void _handleCommand(const String& payload) {
   } else if (strcmp(action, "timeout") == 0) {
     ScoreActions::apply("timeout");
     pushState();
+  } else if (strcmp(action, "set_hardcap") == 0) {
+    ScoreActions::notifyActivity();
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    currentScore.hardcap = (uint8_t)constrain(value, 0, 99);
+    LED::update(currentScore);
+    xSemaphoreGive(scoreMutex);
+    pushState();
   } else if (strcmp(action, "sleep") == 0) {
     ScoreActions::activateSleep();
   }
@@ -180,10 +191,45 @@ static void _tryConnect() {
   String url = "ws://" + _serverIp + ":" + String(_serverPort);
   Serial.printf("[WS] Connecting to %s\n", url.c_str());
 
+  _ws.connect(url);
+
+  if (_connected) {
+    _failCount     = 0;
+    _nextReconnect = RECONNECT_MS;
+  } else {
+    _failCount++;
+    _nextReconnect = min(_nextReconnect * 2UL, (unsigned long)RECONNECT_MAX);
+    Serial.printf("[WS] Failed (attempt %u), retry in %lus\n", _failCount, _nextReconnect / 1000);
+  }
+  _connecting = false;
+}
+
+static void _connectTaskFn(void*) {
+  _tryConnect();
+  vTaskDelete(nullptr); // self-deletes when done
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+inline void stop() {
+  if (_connected) {
+    _ws.close();
+    _connected = false;
+  }
+  _initialized = false;
+  _connecting  = false;
+  _wifiWas     = false;
+  Serial.println("[WS] Stopped");
+}
+
+inline void init(const String& serverIp, uint16_t port = 8080) {
+  _serverIp    = serverIp;
+  _serverPort  = port;
+  _initialized = true;
+
   _ws.onMessage([](websockets::WebsocketsMessage msg) {
     _handleCommand(msg.data());
   });
-
   _ws.onEvent([](websockets::WebsocketsEvent event, String data) {
     if (event == websockets::WebsocketsEvent::ConnectionOpened) {
       _connected = true;
@@ -195,15 +241,6 @@ static void _tryConnect() {
     }
   });
 
-  _ws.connect(url);
-}
-
-// ── Public API ────────────────────────────────────────────────────────────────
-
-inline void init(const String& serverIp, uint16_t port = 8080) {
-  _serverIp    = serverIp;
-  _serverPort  = port;
-  _initialized = true;
   if (serverIp.length() > 0)
     Serial.printf("[WS] Configured: %s:%d\n", serverIp.c_str(), port);
 }
@@ -213,21 +250,23 @@ inline void tick() {
 
   if (WiFi.status() != WL_CONNECTED) {
     if (_wifiWas) {
-      _wifiWas    = false;
-      _wifiLostAt = millis();
-      _connected  = false;
+      _wifiWas   = false;
+      _connected = false;
       Serial.println("[WS] WiFi lost");
-    }
-    if (millis() - _wifiLostAt > WIFI_REBOOT_MS) {
-      Serial.println("[WS] WiFi gone 30s — rebooting");
-      ESP.restart();
     }
     return;
   }
   if (!_wifiWas) {
-    _wifiWas = true;
-    Serial.println("[WS] WiFi restored");
+    _wifiWas       = true;
+    _failCount     = 0;
+    _nextReconnect = RECONNECT_MS;
+    Serial.println(_wifiEverConnected ? "[WS] WiFi restored" : "[WS] WiFi connected");
+    _wifiEverConnected = true;
   }
+
+  // While a connection attempt is running on Core 0, skip poll/send to avoid
+  // concurrent access to _ws from two cores.
+  if (_connecting) return;
 
   if (_connected) {
     _ws.poll();
@@ -261,9 +300,13 @@ inline void tick() {
     return;
   }
 
-  if (millis() - _lastAttempt >= RECONNECT_MS) {
+  if (millis() - _lastAttempt >= _nextReconnect) {
     _lastAttempt = millis();
-    _tryConnect();
+    _connecting  = true;
+    if (xTaskCreatePinnedToCore(_connectTaskFn, "ws_conn", 8192, nullptr, 1, nullptr, 0) != pdPASS) {
+      _connecting = false;
+      Serial.println("[WS] Failed to create connect task");
+    }
   }
 }
 

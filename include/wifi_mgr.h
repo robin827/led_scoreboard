@@ -11,6 +11,7 @@
 #include <WiFi.h>
 #include <Preferences.h>
 #include "config.h"
+#include "mode.h"
 
 namespace WiFiMgr {
 
@@ -114,7 +115,6 @@ inline void init() {
   WiFi.persistent(false);         // credentials managed by NVS, not the SDK
   WiFi.setAutoReconnect(false);   // we manage retries ourselves via tick()
   WiFi.mode(WIFI_AP_STA);
-  WiFi.setSleep(false);  // modem sleep disabled — ESP-NOW drops packets when radio is sleeping
   WiFi.softAP(_scoreboardId.c_str(), AP_PASSWORD);
   delay(500);
   Serial.printf("[WiFi] AP started: %s | IP: %s\n",
@@ -169,11 +169,7 @@ inline void setScoreboardId(const String& id) {
 
 // Called after new credentials are submitted via the portal
 inline void resetRetryCount() {
-  if (!_credsCached || _cachedSsid.length() == 0) return;
   _lastRetryTime = 0;
-  _online = false; _connecting = true;
-  WiFi.begin(_cachedSsid.c_str(), _cachedPass.c_str());
-  Serial.println("[WiFi] Reconnecting with saved credentials...");
 }
 
 } // namespace WiFiMgr

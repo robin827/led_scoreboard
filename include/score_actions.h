@@ -9,15 +9,15 @@ extern SemaphoreHandle_t scoreMutex;
 
 namespace ScoreActions {
 
-static uint32_t _rotationCount   = 0;
-static bool     _rotationPending  = false;
-static bool     _timerActive      = false;
-static uint32_t _timerStartMs     = 0;
-static bool     _timeoutActive    = false;
-static uint32_t _timeoutStartMs   = 0;
+static volatile uint32_t _rotationCount   = 0;
+static volatile bool     _rotationPending  = false;
+static volatile bool     _timerActive      = false;
+static volatile uint32_t _timerStartMs     = 0;
+static volatile bool     _timeoutActive    = false;
+static volatile uint32_t _timeoutStartMs   = 0;
 
 // Battery saver
-static uint32_t        _lastActivityMs      = 0;
+static volatile uint32_t _lastActivityMs   = 0;
 static uint16_t        _dimTimeoutSec       = 300;
 static bool            _dimActive           = false;
 static volatile bool   _wantsWake           = false;
@@ -76,8 +76,10 @@ inline void tickBatterySaver() {
   }
 }
 
+inline void     triggerRotation()     { _rotationCount++; _rotationPending = true; }
 inline bool     getAndClearRotation() { bool r = _rotationPending; _rotationPending = false; return r; }
 inline uint32_t getRotationCount()    { return _rotationCount; }
+inline void     startBreakTimer()     { _timerActive = true; _timerStartMs = millis(); }
 
 inline bool isBreakTimerActive() { return _timerActive; }
 inline uint32_t breakTimerRemainingMs() {
@@ -93,6 +95,17 @@ inline uint32_t timeoutCountdownMs() {
   uint32_t elapsed = millis() - _timeoutStartMs;
   if (elapsed >= TIMEOUT_COUNTDOWN_MS) { _timeoutActive = false; return 0; }
   return TIMEOUT_COUNTDOWN_MS - elapsed;
+}
+
+// Apply a score state received from Firebase — cancels break/timeout timers, updates display
+inline void applyFromDatabase(const Score& db) {
+  notifyActivity();
+  xSemaphoreTake(scoreMutex, portMAX_DELAY);
+  _timerActive   = false;
+  _timeoutActive = false;
+  currentScore = db;
+  LED::update(currentScore);
+  xSemaphoreGive(scoreMutex);
 }
 
 inline bool apply(const char* cmd) {

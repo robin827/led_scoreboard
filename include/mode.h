@@ -7,23 +7,31 @@
 #include <Preferences.h>
 
 enum class AppMode : uint8_t {
-  LOCAL = 0,  // standalone, no cloud
-  SYNC  = 1   // bidirectional Firebase sync + local commands
+  LOCAL    = 0,  // standalone, no network features
+  CENTRAL  = 1,  // WebSocket connection to central server
+  FIREBASE = 2   // direct bidirectional Firebase sync
 };
 
 namespace Mode {
 
-static AppMode _current = AppMode::LOCAL;
+static AppMode _current = AppMode::CENTRAL;
 static Preferences _prefs;
+
+inline const char* _modeName(AppMode m) {
+  switch (m) {
+    case AppMode::CENTRAL:  return "CENTRAL";
+    case AppMode::FIREBASE: return "FIREBASE";
+    default:                return "LOCAL";
+  }
+}
 
 inline void init() {
   _prefs.begin("mode", false);
-  uint8_t raw = _prefs.getUChar("mode", 0);
-  // Remap legacy READ(1)/WRITE(2) → SYNC(1)
-  if (raw > 1) raw = 1;
+  uint8_t raw = _prefs.getUChar("mode", (uint8_t)AppMode::CENTRAL);
+  if (raw > 2) raw = (uint8_t)AppMode::CENTRAL;
   _current = (AppMode)raw;
   _prefs.end();
-  Serial.printf("[MODE] Current: %s\n", _current == AppMode::SYNC ? "SYNC" : "LOCAL");
+  Serial.printf("[MODE] Current: %s\n", _modeName(_current));
 }
 
 inline void set(AppMode mode) {
@@ -31,11 +39,12 @@ inline void set(AppMode mode) {
   _prefs.begin("mode", false);
   _prefs.putUChar("mode", (uint8_t)mode);
   _prefs.end();
-  Serial.printf("[MODE] Changed to: %s\n", mode == AppMode::SYNC ? "SYNC" : "LOCAL");
+  Serial.printf("[MODE] Changed to: %s\n", _modeName(mode));
 }
 
-inline AppMode get()   { return _current; }
-inline bool isLocal()  { return _current == AppMode::LOCAL; }
-inline bool isSync()   { return _current == AppMode::SYNC; }
+inline AppMode get()     { return _current; }
+inline bool isLocal()    { return _current == AppMode::LOCAL; }
+inline bool isCentral()  { return _current == AppMode::CENTRAL; }
+inline bool isFirebase() { return _current == AppMode::FIREBASE; }
 
 } // namespace Mode

@@ -9,7 +9,7 @@
 namespace EspNow {
 
 static uint32_t _lastBeacon = 0;
-static constexpr uint32_t BEACON_INTERVAL_MS = 150;
+static constexpr uint32_t BEACON_INTERVAL_MS = 100;
 
 static void _onReceive(const uint8_t* mac, const uint8_t* data, int len) {
   Serial.printf("[ESP-NOW] RX from %02X:%02X:%02X:%02X:%02X:%02X len=%d\n",

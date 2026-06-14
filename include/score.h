@@ -12,6 +12,7 @@ struct Score {
   uint8_t setB   = 0;
   uint8_t firstServer = 0;  // 0 = Team A serves first, 1 = Team B serves first
   uint8_t winPoints   = 21; // Points needed to win a set (deuce kicks in at winPoints-1)
+  uint8_t hardcap     = 0;  // Max score at which the set ends (0 = no hardcap)
   // Final scores of completed sets (for Firebase WRITE mode)
   uint8_t histA[3] = {0, 0, 0};
   uint8_t histB[3] = {0, 0, 0};

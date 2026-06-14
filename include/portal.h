@@ -13,6 +13,12 @@
 #include "score_actions.h"
 #include <ArduinoJson.h>
 #include "ws_client.h"
+#include "mode.h"
+#include "firebase.h"
+
+// Defined in main.cpp — forward declarations so the /mode route can manage the Firebase task
+extern TaskHandle_t firebaseTaskHandle;
+extern void firebaseTask(void*);
 
 namespace Portal {
 
@@ -157,6 +163,24 @@ select.input option{background:var(--elem)}
 .timer-val{font-size:3rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--accent);letter-spacing:6px;line-height:1}
 .timer-sub{font-size:0.55rem;letter-spacing:3px;text-transform:uppercase;color:var(--accent);opacity:0.5;margin-top:6px}
 .scores.timer-active .set-badge{top:6px;transform:none}
+.bri-compact{background:var(--card);border-radius:16px;padding:8px 16px 10px;margin-bottom:10px}
+.bri-compact-row{display:flex;justify-content:space-between;font-size:0.6rem;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:5px;opacity:0.7}
+.slider-sm{height:16px;margin:0}
+.slider-sm::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--a);cursor:pointer;box-shadow:0 1px 6px rgba(0,0,0,0.5)}
+.slider-sm::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--a);cursor:pointer;border:none}
+.srv-corner{font-size:0.65rem;font-weight:700;padding:3px 8px;border-radius:5px;cursor:pointer;border:1px solid;opacity:.2;transition:opacity .2s,background .2s;user-select:none;-webkit-tap-highlight-color:transparent;white-space:nowrap}
+.srv-corner-a{color:var(--a);border-color:rgba(var(--a-rgb),.3)}
+.srv-corner-b{color:var(--b);border-color:rgba(var(--b-rgb),.3)}
+.srv-corner.active-a{opacity:1;background:rgba(var(--a-rgb),.18)}
+.srv-corner.active-b{opacity:1;background:rgba(var(--b-rgb),.18)}
+.team-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:10px}
+.team-name{font-size:0.65rem;letter-spacing:2px;text-transform:uppercase;color:var(--accent)}
+.collapsible-summary{display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;list-style:none;outline:none;-webkit-tap-highlight-color:transparent;user-select:none}
+.collapsible-summary:focus{outline:none}
+.collapsible-summary::-webkit-details-marker{display:none}
+.collapsible-summary::after{content:'▾';font-size:0.9rem;font-weight:400;transition:transform .2s}
+details[open] .collapsible-summary::after{transform:rotate(-180deg)}
+.collapsible-body{margin-top:14px}
 </style>
 </head>
 <body>
@@ -170,6 +194,11 @@ select.input option{background:var(--elem)}
     <div id="wifiIndicator" class="wifi-indicator" style="display:none"><svg width="13" height="10" viewBox="0 0 13 10" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><circle cx="6.5" cy="8.5" r="1.2"/><path d="M4 5.8C4.7 5 5.6 4.6 6.5 4.6S8.3 5 9 5.8" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/><path d="M1.5 3C2.9 1.5 4.6.7 6.5.7S10.1 1.5 11.5 3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/></svg><span id="wifiIndicatorSSID"></span></div>
   </div>
 
+  <div class="bri-compact">
+    <div class="bri-compact-row"><span>Brightness</span><span><span id="brightVal">31</span>%</span></div>
+    <input type="range" id="brightness" class="slider slider-sm" min="1" max="255" value="80" oninput="setBrightness(this.value)">
+  </div>
+
   <div class="scoreboard">
     <div class="rotate-notice" id="rotateNotice">&#8635; Players rotate positions</div>
     <div class="scores">
@@ -177,7 +206,10 @@ select.input option{background:var(--elem)}
       <div class="set-badge set-badge-b" id="setB">0</div>
       <div id="scoreView" style="display:contents">
         <div class="team">
-          <div class="team-label lbl-a first-srv" id="lblA" onclick="setFirstServer(0)">Team A<span class="srv-hint">1st</span></div>
+          <div class="team-row">
+            <div class="srv-corner srv-corner-a active-a" id="srvCornerA" onclick="setFirstServer(0)">1st</div>
+            <span class="team-name" id="lblA">Team A</span>
+          </div>
           <div class="score-wrap">
             <div class="serve-col serve-col-a" id="serveA"></div>
             <div class="score score-a" id="scoreA">00</div>
@@ -185,7 +217,10 @@ select.input option{background:var(--elem)}
         </div>
         <div class="divider"></div>
         <div class="team">
-          <div class="team-label lbl-b" id="lblB" onclick="setFirstServer(1)">Team B<span class="srv-hint">1st</span></div>
+          <div class="team-row">
+            <span class="team-name" id="lblB">Team B</span>
+            <div class="srv-corner srv-corner-b" id="srvCornerB" onclick="setFirstServer(1)">1st</div>
+          </div>
           <div class="score-wrap">
             <div class="score score-b" id="scoreB">00</div>
             <div class="serve-col serve-col-b" id="serveB"></div>
@@ -201,13 +236,6 @@ select.input option{background:var(--elem)}
     <div class="set-history" id="setHistory" style="display:none"></div>
     <div class="ratio-bar"><div class="ratio-a" id="ratioA"></div><div class="ratio-b" id="ratioB"></div></div>
 
-    <div class="win-selector" id="winSelector">
-      <span class="win-label">Play to</span>
-      <button class="win-btn" id="wp11" data-wp="11" onclick="setWinPoints(11)">11</button>
-      <button class="win-btn" id="wp15" data-wp="15" onclick="setWinPoints(15)">15</button>
-      <button class="win-btn active" id="wp21" data-wp="21" onclick="setWinPoints(21)">21</button>
-    </div>
-
     <div class="controls" id="controls">
       <button class="btn btn-primary-a btn-repeat" onpointerdown="startRepeat('/a/inc',this)" onpointerup="stopRepeat()" onpointerleave="stopRepeat()">+1</button>
       <button class="btn btn-primary-b btn-repeat" onpointerdown="startRepeat('/b/inc',this)" onpointerup="stopRepeat()" onpointerleave="stopRepeat()">+1</button>
@@ -221,22 +249,46 @@ select.input option{background:var(--elem)}
     </div>
   </div>
 
-  <div class="settings">
-    <div class="setting-group">
+  <div class="settings" style="margin-top:12px">
+    <div class="setting-group" style="margin:0">
       <button class="btn" style="width:100%" onclick="action('/timeout',this)">Timeout</button>
     </div>
   </div>
 
-  <div class="settings">
-    <div class="setting-group">
-      <label class="setting-label">Brightness</label>
-      <input type="range" id="brightness" class="slider" min="1" max="255" value="80" oninput="setBrightness(this.value)">
-      <div class="slider-value"><span id="brightVal">31</span>%</div>
+  <details class="settings" style="margin-top:12px;padding:0">
+    <summary class="setting-label collapsible-summary" style="padding:7px 20px">Game Settings</summary>
+    <div class="collapsible-body" style="padding:0 20px 16px">
+      <div class="setting-group">
+        <label class="setting-label">Win Score</label>
+        <div class="win-selector">
+          <button class="win-btn" data-wp="11" onclick="setWinPoints(11)">11</button>
+          <button class="win-btn" data-wp="15" onclick="setWinPoints(15)">15</button>
+          <button class="win-btn" data-wp="17" onclick="setWinPoints(17)">17</button>
+          <button class="win-btn active" data-wp="21" onclick="setWinPoints(21)">21</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+          <input type="number" id="wpCustom" min="1" max="99" placeholder="Custom" class="input" style="flex:1;padding:8px 10px;font-size:0.85rem">
+          <button onclick="applyCustomWinPoints()" style="padding:8px 14px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:0.85rem;cursor:pointer;white-space:nowrap">Set</button>
+        </div>
+      </div>
+      <div class="setting-group" style="margin-bottom:0">
+        <label class="setting-label">Hardcap</label>
+        <div class="win-selector">
+          <button class="win-btn" data-hc="15" onclick="setHardcap(15)">15</button>
+          <button class="win-btn" data-hc="17" onclick="setHardcap(17)">17</button>
+          <button class="win-btn" data-hc="21" onclick="setHardcap(21)">21</button>
+          <button class="win-btn" data-hc="25" onclick="setHardcap(25)">25</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+          <input type="number" id="hcCustom" min="0" max="99" placeholder="Custom (0 = off)" class="input" style="flex:1;padding:8px 10px;font-size:0.85rem">
+          <button onclick="applyCustomHardcap()" style="padding:8px 14px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:0.85rem;cursor:pointer;white-space:nowrap">Set</button>
+        </div>
+      </div>
     </div>
-  </div>
+  </details>
 
-  <div class="settings">
-    <div class="setting-group">
+  <div class="settings" style="margin-top:12px">
+    <div class="setting-group" style="margin:0">
       <button class="btn" style="width:100%;background:rgba(var(--b-rgb),0.1);color:var(--b);border:1px solid rgba(var(--b-rgb),0.3)"
         onclick="openModal('Sleep','Put the scoreboard to sleep?','modal-ok-red','/sleepnow')">Sleep</button>
     </div>
@@ -283,6 +335,18 @@ select.input option{background:var(--elem)}
   </div>
 
   <div class="settings">
+    <div class="setting-group">
+      <label class="setting-label">Network Mode</label>
+      <div class="mode-selector">
+        <button class="mode-btn" id="modeLocal" onclick="setMode('local')">Local<span class="mode-sub">standalone</span></button>
+        <button class="mode-btn" id="modeCentral" onclick="setMode('central')">Central<span class="mode-sub">server sync</span></button>
+        <button class="mode-btn" id="modeFirebase" onclick="setMode('firebase')">Firebase<span class="mode-sub">cloud sync</span></button>
+      </div>
+      <div class="mode-hint" id="modeHint" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <div class="settings">
     <div class="setting-group" id="wifiGroup">
       <label class="setting-label">WiFi <span id="wifiStatus" class="status-badge status-offline">Offline</span></label>
       <button class="btn btn-scan" id="btnScan" onclick="scanWiFi()">Scan Networks</button>
@@ -290,13 +354,30 @@ select.input option{background:var(--elem)}
       <button class="btn-disconnect" id="btnDisconnect" style="display:none" onclick="disconnectWiFi()">Disconnect from <span id="connectedSSID"></span></button>
     </div>
 
-    <div class="setting-group">
+    <div class="setting-group" id="centralSection">
       <label class="setting-label">Central Server <span id="wsStatus" class="status-badge status-offline">Disconnected</span></label>
       <div style="display:flex;gap:8px">
         <input type="text" class="input" id="serverIp" placeholder="e.g. 192.168.1.100" oninput="_serverIpDirty=true">
         <button class="btn" style="background:var(--a);color:var(--bg);padding:12px 16px;font-size:0.85rem;white-space:nowrap;border-radius:8px" onclick="saveServerIp()">Save</button>
       </div>
       <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">WebSocket server IP for central scoreboard management. Leave empty to disable.</div>
+    </div>
+
+    <div class="setting-group" id="firebaseSection" style="display:none">
+      <label class="setting-label">Firebase</label>
+      <div style="margin-bottom:12px">
+        <div style="font-size:0.7rem;color:var(--accent);margin-bottom:6px">Channel</div>
+        <select class="input" id="fbChannel" onchange="saveFbChannel()">
+          <option value="">— select channel —</option>
+        </select>
+      </div>
+      <div>
+        <div style="font-size:0.7rem;color:var(--accent);margin-bottom:6px">Poll interval (seconds)</div>
+        <div style="display:flex;gap:8px">
+          <input type="number" class="input" id="fbPoll" min="1" max="60" placeholder="3">
+          <button class="btn" style="background:var(--elem);color:var(--accent);padding:12px 16px;font-size:0.85rem;white-space:nowrap;border-radius:8px" onclick="saveFbPoll()">Set</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -467,16 +548,24 @@ async function refresh() {
         serveCol.appendChild(mkDot(dotCls));
       }
     }
-    document.getElementById('lblA').className = 'team-label lbl-a' + (d.firstServer === 0 ? ' first-srv' : '');
-    document.getElementById('lblB').className = 'team-label lbl-b' + (d.firstServer === 1 ? ' first-srv' : '');
+    document.getElementById('srvCornerA').className = 'srv-corner srv-corner-a' + (d.firstServer === 0 ? ' active-a' : '');
+    document.getElementById('srvCornerB').className = 'srv-corner srv-corner-b' + (d.firstServer === 1 ? ' active-b' : '');
 
     if (d.boardId && !_boardIdDirty) {
       document.getElementById('boardId').value = d.boardId;
       document.getElementById('pageTitle').textContent = d.boardId;
     }
     if (d.winPoints) {
-      document.querySelectorAll('.win-btn').forEach(b =>
+      document.querySelectorAll('[data-wp]').forEach(b =>
         b.classList.toggle('active', parseInt(b.dataset.wp) === d.winPoints));
+      const wpPresets = [11, 15, 17, 21];
+      document.getElementById('wpCustom').value = wpPresets.includes(d.winPoints) ? '' : d.winPoints;
+    }
+    if (d.hardcap !== undefined) {
+      document.querySelectorAll('[data-hc]').forEach(b =>
+        b.classList.toggle('active', parseInt(b.dataset.hc) === d.hardcap));
+      const hcPresets = [15, 17, 21, 25];
+      document.getElementById('hcCustom').value = (d.hardcap === 0 || hcPresets.includes(d.hardcap)) ? '' : d.hardcap;
     }
 
     if (d.dimSleep !== undefined) {
@@ -558,13 +647,40 @@ async function refresh() {
       btnDisc.style.display = 'none';
     }
 
+    if (d.mode !== undefined) _applyModeUI(d.mode);
+    const _fbCh = document.getElementById('fbChannel');
+    if (_fbCh && d.fbChannel !== undefined) _fbCh.value = d.fbChannel;
+    const _fbPo = document.getElementById('fbPoll');
+    if (_fbPo && d.fbPoll !== undefined) _fbPo.value = d.fbPoll;
+
   } catch(e) {}
 }
 
+const _HC_FOR_WIN = {11:15, 15:17, 17:21, 21:25};
+
 async function setWinPoints(val) {
-  document.querySelectorAll('.win-btn').forEach(b =>
+  document.querySelectorAll('[data-wp]').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.wp) === val));
   try { await fetch('/winpoints', {method:'POST', body: String(val)}); } catch(e) {}
+  // Auto-set matching hardcap for preset values
+  if (_HC_FOR_WIN[val] !== undefined) setHardcap(_HC_FOR_WIN[val]);
+}
+function applyCustomWinPoints() {
+  const v = parseInt(document.getElementById('wpCustom').value);
+  if (!isNaN(v) && v >= 1 && v <= 99) {
+    // Custom win score: only set win points, leave hardcap unchanged
+    document.querySelectorAll('[data-wp]').forEach(b => b.classList.remove('active'));
+    fetch('/winpoints', {method:'POST', body: String(v)}).catch(()=>{});
+  }
+}
+async function setHardcap(val) {
+  document.querySelectorAll('[data-hc]').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.hc) === val));
+  try { await fetch('/hardcap', {method:'POST', body: String(val)}); } catch(e) {}
+}
+function applyCustomHardcap() {
+  const v = parseInt(document.getElementById('hcCustom').value);
+  if (!isNaN(v) && v >= 0 && v <= 99) setHardcap(v);
 }
 
 function showPage(id) {
@@ -707,6 +823,51 @@ async function saveServerIp() {
   try { await fetch('/serverip', {method:'POST', body: val}); _serverIpDirty = false; } catch(e) {}
 }
 
+const _MODE_HINTS = {
+  local: 'Standalone — no network sync. Scores are controlled locally via portal or pedal.',
+  central: 'Syncs with the central scoreboard manager server on your local network.',
+  firebase: 'Syncs directly with Firebase Realtime Database for cloud-based scoring.'
+};
+
+function _applyModeUI(m) {
+  ['Local','Central','Firebase'].forEach(n => {
+    document.getElementById('mode'+n)?.classList.toggle('active', m === n.toLowerCase());
+  });
+  const hint = document.getElementById('modeHint');
+  if (hint) hint.textContent = _MODE_HINTS[m] || '';
+  const cs = document.getElementById('centralSection');
+  const fs = document.getElementById('firebaseSection');
+  if (cs) cs.style.display = m === 'central' ? '' : 'none';
+  if (fs) fs.style.display = m === 'firebase' ? '' : 'none';
+}
+
+async function setMode(m) {
+  try { await fetch('/mode', {method:'POST', body: m}); refresh(); } catch(e) {}
+}
+
+// Populate channel select 1-23
+(function(){
+  const s = document.getElementById('fbChannel');
+  if (!s) return;
+  for (let i = 1; i <= 23; i++) {
+    const o = document.createElement('option');
+    o.value = String(i); o.textContent = 'Channel ' + i;
+    s.appendChild(o);
+  }
+})();
+
+async function saveFbChannel() {
+  const val = document.getElementById('fbChannel')?.value;
+  if (!val) return;
+  try { await fetch('/firebase/channel', {method:'POST', body: val}); } catch(e) {}
+}
+
+async function saveFbPoll() {
+  const val = parseInt(document.getElementById('fbPoll')?.value);
+  if (isNaN(val) || val < 1) return;
+  try { await fetch('/firebase/pollinterval', {method:'POST', body: String(val)}); } catch(e) {}
+}
+
 setInterval(refresh, 2000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 refresh();
@@ -764,6 +925,16 @@ inline void init() {
     json += ",\"sleeping\":" + String(ScoreActions::isDimActive() ? "true" : "false");
     json += ",\"serverIp\":\"" + WsClient::getServerIp() + "\"";
     json += ",\"wsConnected\":" + String(WsClient::isConnected() ? "true" : "false");
+    String _modeStr;
+    switch (Mode::get()) {
+      case AppMode::CENTRAL:  _modeStr = "central";  break;
+      case AppMode::FIREBASE: _modeStr = "firebase"; break;
+      default:                _modeStr = "local";    break;
+    }
+    json += ",\"mode\":\"" + _modeStr + "\"";
+    json += ",\"fbChannel\":\"" + Firebase::getChannel() + "\"";
+    json += ",\"fbPoll\":" + String(Firebase::getPollIntervalSec());
+    json += ",\"hardcap\":" + String(currentScore.hardcap);
     json += "}";
     server->send(200, "application/json", json);
   });
@@ -787,6 +958,20 @@ inline void init() {
     currentScore.firstServer = (body == "1") ? 1 : 0;
     LED::update(currentScore);
     xSemaphoreGive(scoreMutex);
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/hardcap", HTTP_POST, []() {
+    ScoreActions::notifyActivity();
+    if (server->hasArg("plain")) {
+      int hc = server->arg("plain").toInt();
+      if (hc >= 0 && hc <= 99) {
+        xSemaphoreTake(scoreMutex, portMAX_DELAY);
+        currentScore.hardcap = (uint8_t)hc;
+        LED::update(currentScore);
+        xSemaphoreGive(scoreMutex);
+      }
+    }
     server->send(200, "text/plain", "OK");
   });
 
@@ -895,6 +1080,55 @@ inline void init() {
     ip.trim();
     WsClient::saveServerIp(ip);
     WsClient::init(ip);
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/mode", HTTP_POST, []() {
+    if (!server->hasArg("plain")) { server->send(400, "text/plain", "Bad"); return; }
+    String m = server->arg("plain");
+
+    AppMode newMode;
+    if      (m == "local")    newMode = AppMode::LOCAL;
+    else if (m == "central")  newMode = AppMode::CENTRAL;
+    else if (m == "firebase") newMode = AppMode::FIREBASE;
+    else { server->send(400, "text/plain", "Unknown mode"); return; }
+
+    AppMode oldMode = Mode::get();
+    if (newMode == oldMode) { server->send(200, "text/plain", "OK"); return; }
+
+    // Tear down current mode
+    if (oldMode == AppMode::CENTRAL) {
+      WsClient::stop();
+    } else if (oldMode == AppMode::FIREBASE) {
+      if (firebaseTaskHandle) {
+        vTaskDelete(firebaseTaskHandle);
+        firebaseTaskHandle = nullptr;
+      }
+    }
+
+    Mode::set(newMode);
+
+    // Start new mode
+    if (newMode == AppMode::CENTRAL) {
+      WsClient::init(WsClient::loadServerIp());
+    } else if (newMode == AppMode::FIREBASE) {
+      Firebase::loadPollInterval();
+      xTaskCreatePinnedToCore(firebaseTask, "firebase", 8192, nullptr, 1, &firebaseTaskHandle, 0);
+    }
+
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/firebase/channel", HTTP_POST, []() {
+    if (!server->hasArg("plain")) { server->send(400, "text/plain", "Bad"); return; }
+    Firebase::setChannel(server->arg("plain"));
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/firebase/pollinterval", HTTP_POST, []() {
+    if (!server->hasArg("plain")) { server->send(400, "text/plain", "Bad"); return; }
+    uint16_t secs = (uint16_t)constrain(server->arg("plain").toInt(), 1, 60);
+    Firebase::setPollInterval(secs);
     server->send(200, "text/plain", "OK");
   });
 

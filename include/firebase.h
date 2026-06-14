@@ -155,13 +155,20 @@ inline bool readScore(Score& score) {
   score.scoreA = payload.substring(idxA + 15).toInt();
   score.scoreB = payload.substring(idxB + 15).toInt();
 
-  // Parse game_settings.win_points (may be string "21" or number 21)
+  // Parse game_settings.win_points and hardcap
   int idxWP = payload.indexOf("\"win_points\":");
   if (idxWP >= 0) {
     int valStart = idxWP + 13;
     while (valStart < (int)payload.length() && (payload[valStart] == ' ' || payload[valStart] == '"')) valStart++;
     int wp = payload.substring(valStart).toInt();
     if (wp >= 5 && wp <= 99) score.winPoints = wp;
+  }
+  int idxHC = payload.indexOf("\"hardcap\":");
+  if (idxHC >= 0) {
+    int valStart = idxHC + 10;
+    while (valStart < (int)payload.length() && (payload[valStart] == ' ' || payload[valStart] == '"')) valStart++;
+    int hc = payload.substring(valStart).toInt();
+    if (hc == 0 || (hc >= 5 && hc <= 99)) score.hardcap = (uint8_t)hc;
   }
 
   // Parse starting_server: "a"/"b" → Team A (firstServer=0), "c"/"d" → Team B (firstServer=1)
@@ -263,8 +270,9 @@ inline bool writeScore(const Score& score) {
   return code == 200;
 }
 
-// ── Write starting_server for the active set ──────────────────────────────────
-// firstServer=0 (Team A) → "a",  firstServer=1 (Team B) → "c"
+// ── Write starting_server + starting_receiver for the active set in one PATCH ──
+// firstServer=0 (Team A / yellow): server="a", receiver="c"
+// firstServer=1 (Team B / blue):   server="c", receiver="a"
 
 inline bool writeFirstServer(const Score& score) {
   String channel = getChannel();
@@ -274,31 +282,53 @@ inline bool writeFirstServer(const Score& score) {
   if (localIP[0] == 0) return false;
 
   int activeSet = score.setA + score.setB + 1;
-  String setPath = String(FIREBASE_DATABASE_URL)
-    + "/match-" + channel + "/score/set_" + String(activeSet);
-  String serverVal  = (score.firstServer == 0) ? "\"a\"" : "\"c\"";
-  String receiverVal = (score.firstServer == 0) ? "\"c\"" : "\"a\"";
+  String url = String(FIREBASE_DATABASE_URL)
+    + "/match-" + channel + "/score/set_" + String(activeSet) + ".json";
 
-  // Write starting_server
+  const char* serverVal   = (score.firstServer == 0) ? "a" : "c";
+  const char* receiverVal = (score.firstServer == 0) ? "c" : "a";
+
+  JsonDocument doc;
+  doc["starting_server"]   = serverVal;
+  doc["starting_receiver"] = receiverVal;
+  String payload;
+  serializeJson(doc, payload);
+
   HTTPClient http;
   http.setTimeout(5000);
   http.setReuse(false);
-  if (!http.begin(*_getClient(), setPath + "/starting_server.json")) { _resetClient(); return false; }
+  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
   http.addHeader("Content-Type", "application/json");
-  int code = http.PUT(serverVal);
+  int code = http.PATCH(payload);
+  http.end();
+
+  if (code < 0) { _resetClient(); return false; }
+  Serial.printf("[Firebase] writeFirstServer OK: server=%s receiver=%s (code %d)\n",
+    serverVal, receiverVal, code);
+  return code == 200;
+}
+
+// ── Write hardcap ─────────────────────────────────────────────────────────────
+
+inline bool writeHardcap(uint8_t hardcap) {
+  String channel = getChannel();
+  if (channel.isEmpty()) return false;
+  if (!WiFi.isConnected()) return false;
+  IPAddress localIP = WiFi.localIP();
+  if (localIP[0] == 0) return false;
+
+  HTTPClient http;
+  http.setTimeout(5000);
+  http.setReuse(false);
+  String url = String(FIREBASE_DATABASE_URL)
+    + "/match-" + channel + "/game_settings/hardcap.json";
+  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
+  http.addHeader("Content-Type", "application/json");
+  int code = http.PUT(String(hardcap));
   http.end();
   if (code < 0) { _resetClient(); return false; }
-
-  // Write starting_receiver
-  if (!http.begin(*_getClient(), setPath + "/starting_receiver.json")) { _resetClient(); return false; }
-  http.addHeader("Content-Type", "application/json");
-  code = http.PUT(receiverVal);
-  http.end();
-  if (code < 0) { _resetClient(); return false; }
-
-  Serial.printf("[Firebase] writeFirstServer OK: server=%s receiver=%s\n",
-    serverVal.c_str(), receiverVal.c_str());
-  return true;
+  Serial.printf("[Firebase] writeHardcap OK: %d (code %d)\n", hardcap, code);
+  return code == 200;
 }
 
 // ── Write win_points directly to its leaf node (avoids overwriting siblings) ──
