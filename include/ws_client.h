@@ -20,6 +20,7 @@
 #include "score.h"
 #include "led.h"
 #include "score_actions.h"
+#include "wifi_mgr.h"
 
 extern Score currentScore;
 extern SemaphoreHandle_t scoreMutex;
@@ -108,6 +109,7 @@ inline void pushState() {
     hb.add(s.histB[i]);
   }
 
+  doc["boardId"] = WiFiMgr::getScoreboardId();
   doc["pedals"].to<JsonArray>();
 
   String json;
@@ -290,6 +292,7 @@ inline void tick() {
         cur.setB        != _lastScore.setB            ||
         cur.firstServer != _lastScore.firstServer     ||
         cur.winPoints   != _lastScore.winPoints       ||
+        cur.hardcap     != _lastScore.hardcap         ||
         bright          != _lastBright) {
       _needsPush  = false;
       _lastPush   = now;

@@ -91,14 +91,50 @@ inline void drawSetDigitSm(int d, int sx, int sy, CRGB col) {
 // ─── Breathing animation state ───────────────────────────────────────────────
 
 static Score    _animScore;
-static uint32_t _lastTick  = 0;
-static bool     _timerMode = false;
+static uint32_t _lastTick         = 0;
+static bool     _timerMode        = false;
+static bool     _rotationLoopActive = false;
 
 inline uint8_t _breatheFactor() {
   return sin8((uint8_t)(millis() / 5));
 }
 
 // ─── Serve pixel helper ───────────────────────────────────────────────────────
+
+// Smooth color-wheel spinning CCW in the extension rows between the set badges.
+// Safe zone: x=8..15, y=8..11 (badges at x=5..7 and x=16..18 are untouched).
+// Hue is set by each pixel's angle from center; millis() advances the whole wheel.
+// Brightness falls off quadratically FROM the center (not from an inner radius),
+// so the top/bottom edges (dist≈1.5) are visibly dimmer — this is what produces
+// the disc shape instead of a flat rectangle.
+inline void _drawRotationLoop() {
+  static constexpr float    PI_F   = 3.14159265f;
+  static constexpr float    PI2    = 6.28318530f;
+  static constexpr uint32_t PERIOD = 2000;  // ms per full CCW revolution
+
+  float rot = (float)(millis() % PERIOD) / PERIOD;
+  const float cx = 11.5f, cy = 9.5f;
+
+  for (int x = 8; x <= 15; x++) {
+    for (int y = 8; y <= 11; y++) {
+      float dx   = (float)x - cx;
+      float dy   = cy - (float)y;             // flip y: up on screen = positive
+      float dist = sqrtf(dx * dx + dy * dy);
+      float norm = (atan2f(dy, dx) + PI_F) / PI2;  // 0..1, CCW from right
+
+      float hf    = fmodf((norm - rot + 2.0f) * 255.0f, 256.0f);
+      uint8_t hue = (uint8_t)hf + 43;  // yellow at right pole, blue at left
+
+      // Ring at dist≈1.5: center pixels (dist≈0.71) and corners (dist≈2.12)
+      // both go dark; only the 8 outer ring pixels (dist≈1.58) are lit.
+      float dr  = fabsf(dist - 1.5f);
+      float r   = fminf(1.0f, dr / 0.6f);
+      uint8_t bri = (uint8_t)((1.0f - r * r) * 240.0f);
+
+      _leds[xy(x, y)] = CHSV(hue, 255, bri);
+    }
+  }
+}
 
 inline void _applyServeSmall(const Score& score, uint8_t breathe) {
   if (isSetWon(score)) return;
@@ -218,6 +254,9 @@ inline void setRawBrightness(uint8_t brightness) {
 }
 
 inline void update(const Score& score) {
+  if (score.scoreA != _animScore.scoreA || score.scoreB != _animScore.scoreB ||
+      score.setA   != _animScore.setA   || score.setB   != _animScore.setB)
+    _rotationLoopActive = false;
   _animScore = score;
   _timerMode = false;
   FastLED.clear();
@@ -232,6 +271,7 @@ inline void tick() {
   _lastTick = now;
   if (_timerMode) return;
   _applyServeSmall(_animScore, _breatheFactor());
+  if (_rotationLoopActive) _drawRotationLoop();
   FastLED.show();
 }
 
@@ -292,7 +332,8 @@ inline void rotationAnimation() {
       delay(PAUSE_MS);
     }
   }
-  update(_animScore);
+  _rotationLoopActive = true;
+  update(_animScore);  // same score → flag stays set; loop starts in tick()
 }
 
 // Sleep animation: 4 LEDs centred (cols 10-13, row 5), yellow→cyan travelling wave

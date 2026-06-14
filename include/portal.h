@@ -970,6 +970,7 @@ inline void init() {
         currentScore.hardcap = (uint8_t)hc;
         LED::update(currentScore);
         xSemaphoreGive(scoreMutex);
+        WsClient::requestPush();
       }
     }
     server->send(200, "text/plain", "OK");
