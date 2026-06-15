@@ -101,37 +101,34 @@ inline uint8_t _breatheFactor() {
 
 // ─── Serve pixel helper ───────────────────────────────────────────────────────
 
-// Smooth color-wheel spinning CCW in the extension rows between the set badges.
-// Safe zone: x=8..15, y=8..11 (badges at x=5..7 and x=16..18 are untouched).
-// Hue is set by each pixel's angle from center; millis() advances the whole wheel.
-// Brightness falls off quadratically FROM the center (not from an inner radius),
-// so the top/bottom edges (dist≈1.5) are visibly dimmer — this is what produces
-// the disc shape instead of a flat rectangle.
+// Two dots (COLOR_A and COLOR_B), phase-opposite, stepping CCW through the 8
+// explicit ring pixels — no trig rounding means corners are never touched.
 inline void _drawRotationLoop() {
-  static constexpr float    PI_F   = 3.14159265f;
-  static constexpr float    PI2    = 6.28318530f;
-  static constexpr uint32_t PERIOD = 2000;  // ms per full CCW revolution
+  // 8 valid ring pixels in CCW order (no corners)
+  static const int8_t RING[8][2] = {
+    {13, 9}, {12, 8}, {11, 8}, {10, 9},
+    {10,10}, {11,11}, {12,11}, {13,10}
+  };
+  static constexpr uint32_t PERIOD = 1600;  // ms per full revolution
+  static constexpr int      TRAIL  = 3;
 
-  float rot = (float)(millis() % PERIOD) / PERIOD;
-  const float cx = 11.5f, cy = 9.5f;
+  int headIdx = (int)((float)(millis() % PERIOD) / PERIOD * 8.0f) & 7;
 
-  for (int x = 8; x <= 15; x++) {
-    for (int y = 8; y <= 11; y++) {
-      float dx   = (float)x - cx;
-      float dy   = cy - (float)y;             // flip y: up on screen = positive
-      float dist = sqrtf(dx * dx + dy * dy);
-      float norm = (atan2f(dy, dx) + PI_F) / PI2;  // 0..1, CCW from right
+  // Clear ring area
+  for (int x = 9; x <= 14; x++)
+    for (int y = 8; y <= 11; y++)
+      _leds[xy(x, y)] = CRGB::Black;
 
-      float hf    = fmodf((norm - rot + 2.0f) * 255.0f, 256.0f);
-      uint8_t hue = (uint8_t)hf + 43;  // yellow at right pole, blue at left
-
-      // Ring at dist≈1.5: center pixels (dist≈0.71) and corners (dist≈2.12)
-      // both go dark; only the 8 outer ring pixels (dist≈1.58) are lit.
-      float dr  = fabsf(dist - 1.5f);
-      float r   = fminf(1.0f, dr / 0.6f);
-      uint8_t bri = (uint8_t)((1.0f - r * r) * 240.0f);
-
-      _leds[xy(x, y)] = CHSV(hue, 255, bri);
+  // Two dots 4 positions (180°) apart, each with a fading trail
+  for (int d = 0; d < 2; d++) {
+    CRGB col  = (d == 0) ? COLOR_A : COLOR_B;
+    int  base = headIdx + d * 4;
+    for (int t = TRAIL; t >= 0; t--) {  // oldest first so head overwrites
+      int     idx = (base - t + 32) & 7;
+      // Exponential falloff: each trail step halves brightness (230 → 60 → 30 → 15)
+      uint8_t bri = (t == 0) ? 230 : (uint8_t)(120u >> t);
+      CRGB    c   = col; c.nscale8(bri);
+      _leds[xy(RING[idx][0], RING[idx][1])] = c;
     }
   }
 }
