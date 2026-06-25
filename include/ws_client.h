@@ -135,6 +135,7 @@ inline void pushState() {
   doc["uptime"]    = (unsigned long)(esp_timer_get_time() / 1000000ULL);
   doc["mode"]      = "central";
   doc["hardcap"]   = s.hardcap;
+  doc["format"]    = s.format;
   doc["setA"]      = s.setA;
   doc["setB"]      = s.setB;
   doc["timeoutMs"] = ScoreActions::timeoutCountdownMs();
@@ -220,6 +221,12 @@ static void _handleCommand(const String& payload) {
     xSemaphoreTake(scoreMutex, portMAX_DELAY);
     currentScore.hardcap = (uint8_t)constrain(value, 0, 99);
     LED::update(currentScore);
+    xSemaphoreGive(scoreMutex);
+    pushState();
+  } else if (strcmp(action, "set_format") == 0) {
+    ScoreActions::notifyActivity();
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    if (value >= 0 && value <= 2) currentScore.format = (uint8_t)value;
     xSemaphoreGive(scoreMutex);
     pushState();
   } else if (strcmp(action, "sleep") == 0) {
@@ -340,6 +347,7 @@ inline void tick() {
         cur.firstServer != _lastScore.firstServer     ||
         cur.winPoints   != _lastScore.winPoints       ||
         cur.hardcap     != _lastScore.hardcap         ||
+        cur.format      != _lastScore.format          ||
         bright          != _lastBright) {
       _needsPush  = false;
       _lastPush   = now;

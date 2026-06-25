@@ -181,8 +181,18 @@ inline bool apply(const char* cmd) {
     }
   }
   if (didNextSet) {
-    _timerActive  = true;
-    _timerStartMs = millis();
+    // BO1 (0): no timer. 2sets (1): always. BO3 (2): only if match not over.
+    bool startTimer = false;
+    uint8_t fmt = currentScore.format;
+    if (fmt == 1) {
+      startTimer = true;
+    } else if (fmt == 2) {
+      startTimer = (currentScore.setA < 2 && currentScore.setB < 2);
+    }
+    if (startTimer) {
+      _timerActive  = true;
+      _timerStartMs = millis();
+    }
   }
 
   if (changed) LED::update(currentScore);

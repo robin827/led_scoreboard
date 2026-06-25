@@ -275,7 +275,7 @@ details[open] .collapsible-summary::after{transform:rotate(-180deg)}
           <button onclick="applyCustomWinPoints()" style="padding:8px 14px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:0.85rem;cursor:pointer;white-space:nowrap">Set</button>
         </div>
       </div>
-      <div class="setting-group" style="margin-bottom:0">
+      <div class="setting-group">
         <label class="setting-label">Hardcap</label>
         <div class="win-selector">
           <button class="win-btn" data-hc="15" onclick="setHardcap(15)">15</button>
@@ -286,6 +286,14 @@ details[open] .collapsible-summary::after{transform:rotate(-180deg)}
         <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
           <input type="number" id="hcCustom" min="0" max="99" placeholder="Custom (0 = off)" class="input" style="flex:1;padding:8px 10px;font-size:0.85rem">
           <button onclick="applyCustomHardcap()" style="padding:8px 14px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:0.85rem;cursor:pointer;white-space:nowrap">Set</button>
+        </div>
+      </div>
+      <div class="setting-group" style="margin-bottom:0">
+        <label class="setting-label">Format</label>
+        <div class="win-selector">
+          <button class="win-btn" data-fmt="0" onclick="setFormat(0)">BO1</button>
+          <button class="win-btn" data-fmt="1" onclick="setFormat(1)">2 sets</button>
+          <button class="win-btn active" data-fmt="2" onclick="setFormat(2)">BO3</button>
         </div>
       </div>
     </div>
@@ -577,6 +585,10 @@ async function refresh() {
       const hcPresets = [15, 17, 21, 25];
       document.getElementById('hcCustom').value = (d.hardcap === 0 || hcPresets.includes(d.hardcap)) ? '' : d.hardcap;
     }
+    if (d.format !== undefined) {
+      document.querySelectorAll('[data-fmt]').forEach(b =>
+        b.classList.toggle('active', parseInt(b.dataset.fmt) === d.format));
+    }
 
     if (d.dimSleep !== undefined) {
       document.querySelectorAll('[id^="ds"]').forEach(b =>
@@ -694,6 +706,11 @@ async function setHardcap(val) {
 function applyCustomHardcap() {
   const v = parseInt(document.getElementById('hcCustom').value);
   if (!isNaN(v) && v >= 0 && v <= 99) setHardcap(v);
+}
+async function setFormat(val) {
+  document.querySelectorAll('[data-fmt]').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.fmt) === val));
+  try { await fetch('/format', {method:'POST', body: String(val)}); } catch(e) {}
 }
 
 function showPage(id) {
@@ -1069,6 +1086,7 @@ inline void init() {
     json += ",\"fbChannel\":\"" + Firebase::getChannel() + "\"";
     json += ",\"fbPoll\":" + String(Firebase::getPollIntervalSec());
     json += ",\"hardcap\":" + String(currentScore.hardcap);
+    json += ",\"format\":" + String(currentScore.format);
     json += ",\"version\":\"" + String(FIRMWARE_VERSION) + "\"";
     json += "}";
     server->send(200, "application/json", json);
@@ -1104,6 +1122,20 @@ inline void init() {
         xSemaphoreTake(scoreMutex, portMAX_DELAY);
         currentScore.hardcap = (uint8_t)hc;
         LED::update(currentScore);
+        xSemaphoreGive(scoreMutex);
+        WsClient::requestPush();
+      }
+    }
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/format", HTTP_POST, []() {
+    ScoreActions::notifyActivity();
+    if (server->hasArg("plain")) {
+      int fmt = server->arg("plain").toInt();
+      if (fmt >= 0 && fmt <= 2) {
+        xSemaphoreTake(scoreMutex, portMAX_DELAY);
+        currentScore.format = (uint8_t)fmt;
         xSemaphoreGive(scoreMutex);
         WsClient::requestPush();
       }
