@@ -15,6 +15,7 @@
 #include "ws_client.h"
 #include "mode.h"
 #include "firebase.h"
+#include <Update.h>
 
 // Defined in main.cpp — forward declarations so the /mode route can manage the Firebase task
 extern TaskHandle_t firebaseTaskHandle;
@@ -381,6 +382,12 @@ details[open] .collapsible-summary::after{transform:rotate(-180deg)}
           <button class="btn" style="background:var(--elem);color:var(--accent);padding:12px 16px;font-size:0.85rem;white-space:nowrap;border-radius:8px" onclick="saveFbPoll()">Set</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div class="settings" style="margin-top:12px">
+    <div class="setting-group" style="margin:0">
+      <a href="/update" style="display:block;text-align:center;padding:14px;background:var(--elem);color:var(--accent);border-radius:12px;font-size:0.85rem;font-weight:600;text-decoration:none">Update Firmware</a>
     </div>
   </div>
 
@@ -882,6 +889,127 @@ refresh();
 </html>
 )rawhtml";
 
+static const char OTA_HTML[] PROGMEM = R"rawhtml(
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Firmware Update</title>
+<style>
+:root{--bg:#1c1830;--card:#251f40;--elem:#3a3460;--border:#4a4478;--a:#f5c518;--b:#e83e8c;--accent:#8070a8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.wrap{width:100%;max-width:360px}
+.hdr{text-align:center;margin-bottom:24px}
+.logo{font-size:.65rem;letter-spacing:4px;text-transform:uppercase;color:var(--accent);margin-bottom:6px;font-weight:600}
+h1{font-size:1.1rem;font-weight:700;margin-bottom:4px}
+.cur-ver{font-size:.75rem;color:var(--accent);margin-top:4px}
+.card{background:var(--card);border-radius:16px;padding:20px;margin-bottom:12px}
+.lbl{font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:10px}
+.btn{width:100%;padding:13px;border:none;border-radius:10px;font-size:.9rem;font-weight:600;cursor:pointer;background:var(--a);color:#1c1830}
+.btn:disabled{opacity:.5;cursor:default}
+.btn-sec{background:var(--elem);color:var(--accent)}
+.result{margin-top:12px;background:var(--elem);border-radius:10px;padding:12px}
+.result-row{display:flex;justify-content:space-between;font-size:.82rem;margin-bottom:4px}
+.rlbl{color:var(--accent);font-size:.68rem;letter-spacing:1px;text-transform:uppercase}
+.notes{font-size:.75rem;color:var(--accent);margin-top:6px;line-height:1.4}
+.ok{color:#66dd66;font-size:.82rem;text-align:center;margin-top:8px}
+input[type=file]{width:100%;background:var(--elem);border:1px solid var(--border);border-radius:8px;color:#fff;padding:10px;font-size:.85rem;cursor:pointer;margin-bottom:10px}
+.prog{display:none;margin-top:14px}
+.bar-bg{background:var(--elem);border-radius:4px;height:8px;overflow:hidden}
+.bar-fg{height:100%;background:var(--a);border-radius:4px;width:0;transition:width .2s}
+.st{font-size:.78rem;color:var(--accent);margin-top:6px;text-align:center}
+a.back{display:block;text-align:center;margin-top:14px;color:var(--accent);font-size:.82rem;text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="hdr">
+  <div class="logo">Roundnet Scoreboard</div>
+  <h1>Firmware Update</h1>
+  <div class="cur-ver">Current: <span id="cur">…</span></div>
+</div>
+
+<div class="card">
+  <div class="lbl">Check for Updates</div>
+  <button id="btn-check" class="btn btn-sec" onclick="checkUpdate()">Check Now</button>
+  <div id="check-res"></div>
+</div>
+
+<div class="card">
+  <div class="lbl">Manual Upload (.bin)</div>
+  <input type="file" id="f" accept=".bin">
+  <button id="btn-up" class="btn" onclick="go()">Upload &amp; Flash</button>
+  <div class="prog" id="prog">
+    <div class="bar-bg"><div class="bar-fg" id="bar"></div></div>
+    <div class="st" id="st">Uploading...</div>
+  </div>
+</div>
+<a href="/" class="back">&#8592; Back to Portal</a>
+</div>
+
+<script>
+fetch('/status').then(r=>r.json()).then(d=>{
+  document.getElementById('cur').textContent='v'+(d.version||'?');
+}).catch(()=>{ document.getElementById('cur').textContent='?'; });
+
+function checkUpdate(){
+  var btn=document.getElementById('btn-check'),res=document.getElementById('check-res');
+  btn.disabled=true; btn.textContent='Checking…';
+  fetch('/update/check',{method:'POST'}).then(r=>r.json()).then(d=>{
+    if(d.error){res.innerHTML='<div class="st" style="color:var(--b)">'+d.error+'</div>';return;}
+    var upToDate=d.latest===d.current;
+    res.innerHTML='<div class="result">'
+      +'<div class="result-row"><span class="rlbl">Latest</span><span>v'+d.latest+'</span></div>'
+      +(d.notes?'<div class="notes">'+d.notes+'</div>':'')
+      +(upToDate
+        ?'<div class="ok">✓ Up to date</div>'
+        :'<button class="btn" style="margin-top:12px" id="btn-apply" onclick="applyRemote(\''+d.url.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\')" >Install v'+d.latest+'</button>'
+         +'<div class="st" id="apply-st"></div>')
+      +'</div>';
+  }).catch(function(e){
+    res.innerHTML='<div class="st" style="color:var(--b)">'+e.message+'</div>';
+  }).finally(function(){
+    btn.disabled=false; btn.textContent='Check Now';
+  });
+}
+
+function applyRemote(url){
+  var applyBtn=document.getElementById('btn-apply'),st=document.getElementById('apply-st');
+  if(applyBtn) applyBtn.disabled=true;
+  if(st) st.textContent='Starting download… Board will reboot shortly.';
+  fetch('/update/fetch',{method:'POST',headers:{'Content-Type':'text/plain'},body:url})
+    .then(r=>r.json()).then(function(d){
+      if(st) st.textContent=d.ok?'Downloading and flashing… Board will reboot.':'Error: '+(d.error||'unknown');
+    }).catch(function(e){ if(st) st.textContent='Error: '+e.message; });
+}
+
+function go(){
+  var f=document.getElementById('f').files[0];
+  if(!f){alert('Select a .bin file');return;}
+  var btn=document.getElementById('btn-up'),prog=document.getElementById('prog'),
+      bar=document.getElementById('bar'),st=document.getElementById('st');
+  btn.disabled=true; prog.style.display='block';
+  var x=new XMLHttpRequest();
+  x.upload.onprogress=function(e){
+    if(e.lengthComputable){var p=Math.round(e.loaded/e.total*100);
+      bar.style.width=p+'%'; st.textContent='Uploading... '+p+'%';}
+  };
+  x.onload=function(){
+    if(x.status===200&&x.responseText==='OK'){
+      bar.style.width='100%'; st.textContent='Done! Rebooting…';}
+    else{st.textContent='Error: '+x.responseText; btn.disabled=false;}
+  };
+  x.onerror=function(){st.textContent='Upload failed'; btn.disabled=false;};
+  var d=new FormData(); d.append('firmware',f);
+  x.open('POST','/update'); x.send(d);
+}
+</script>
+</body>
+</html>
+)rawhtml";
+
 inline void init() {
   Serial.println("[PORTAL] Starting...");
   
@@ -941,6 +1069,7 @@ inline void init() {
     json += ",\"fbChannel\":\"" + Firebase::getChannel() + "\"";
     json += ",\"fbPoll\":" + String(Firebase::getPollIntervalSec());
     json += ",\"hardcap\":" + String(currentScore.hardcap);
+    json += ",\"version\":\"" + String(FIRMWARE_VERSION) + "\"";
     json += "}";
     server->send(200, "application/json", json);
   });
@@ -1137,6 +1266,96 @@ inline void init() {
     uint16_t secs = (uint16_t)constrain(server->arg("plain").toInt(), 1, 60);
     Firebase::setPollInterval(secs);
     server->send(200, "text/plain", "OK");
+  });
+
+  // OTA firmware update
+  server->on("/update", HTTP_GET, []() {
+    server->send_P(200, "text/html", OTA_HTML);
+  });
+  server->on("/update", HTTP_POST,
+    []() {
+      bool ok = !Update.hasError();
+      server->sendHeader("Connection", "close");
+      server->send(200, "text/plain", ok ? "OK" : Update.errorString());
+      if (ok) { delay(100); ESP.restart(); }
+    },
+    []() {
+      HTTPUpload& upload = server->upload();
+      if (upload.status == UPLOAD_FILE_START) {
+        Serial.printf("[OTA] Start: %s\n", upload.filename.c_str());
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
+      } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize)
+          Update.printError(Serial);
+      } else if (upload.status == UPLOAD_FILE_END) {
+        if (Update.end(true)) Serial.printf("[OTA] Success: %u bytes\n", upload.totalSize);
+        else Update.printError(Serial);
+      }
+    }
+  );
+
+  // Check for firmware update via GitHub Releases API
+  server->on("/update/check", HTTP_POST, []() {
+    if (!WiFiMgr::isOnline()) {
+      server->send(503, "application/json", "{\"error\":\"Board not online\"}");
+      return;
+    }
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    http.begin(client, MANIFEST_URL);
+    http.setTimeout(10000);
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+    http.addHeader("User-Agent", "roundnet-scoreboard");
+    int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+      http.end();
+      server->send(502, "application/json", "{\"error\":\"Fetch failed\"}");
+      return;
+    }
+    // Filter to only deserialize what we need — keeps RAM usage low on large API responses
+    JsonDocument filter;
+    filter["tag_name"] = true;
+    filter["body"]     = true;
+    filter["assets"][0]["browser_download_url"] = true;
+    JsonDocument doc;
+    WiFiClient* stream = http.getStreamPtr();
+    DeserializationError err = deserializeJson(doc, *stream, DeserializationOption::Filter(filter));
+    http.end();
+    if (err != DeserializationError::Ok) {
+      server->send(502, "application/json", "{\"error\":\"Invalid response\"}");
+      return;
+    }
+    // Strip leading 'v' from tag name ("v1.1.0" → "1.1.0")
+    String latest = String(doc["tag_name"] | "?");
+    if (latest.length() > 0 && (latest[0] == 'v' || latest[0] == 'V')) latest = latest.substring(1);
+    String dlUrl  = String(doc["assets"][0]["browser_download_url"] | "");
+    String notes  = String(doc["body"] | "");
+    if (notes.length() > 200) notes = notes.substring(0, 200) + "...";
+    String resp = "{";
+    resp += "\"current\":\"" + String(FIRMWARE_VERSION) + "\",";
+    resp += "\"latest\":\""  + latest + "\",";
+    resp += "\"url\":\""     + dlUrl  + "\",";
+    resp += "\"notes\":\""   + notes  + "\"";
+    resp += "}";
+    server->send(200, "application/json", resp);
+  });
+
+  // Start OTA download from URL (launched in background task, returns immediately)
+  server->on("/update/fetch", HTTP_POST, []() {
+    if (!WiFiMgr::isOnline()) {
+      server->send(503, "application/json", "{\"ok\":false,\"error\":\"Board not online\"}");
+      return;
+    }
+    String url = server->hasArg("plain") ? server->arg("plain") : "";
+    url.trim();
+    if (url.length() == 0 || url.length() >= sizeof(WsClient::_otaUrl)) {
+      server->send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid URL\"}");
+      return;
+    }
+    strlcpy(WsClient::_otaUrl, url.c_str(), sizeof(WsClient::_otaUrl));
+    xTaskCreate(WsClient::_otaTask, "ota_dl", 16384, nullptr, 2, nullptr);
+    server->send(200, "application/json", "{\"ok\":true}");
   });
 
   // Redirection captive portal

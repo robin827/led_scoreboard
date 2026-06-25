@@ -17,10 +17,14 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <Preferences.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <Update.h>
 #include "score.h"
 #include "led.h"
 #include "score_actions.h"
 #include "wifi_mgr.h"
+#include "config.h"
 
 extern Score currentScore;
 extern SemaphoreHandle_t scoreMutex;
@@ -44,6 +48,41 @@ static constexpr unsigned long HEARTBEAT_MS  = 3000;
 static unsigned int      _failCount     = 0;
 static unsigned long     _nextReconnect = RECONNECT_MS;
 static volatile bool     _connecting    = false;
+static char              _otaUrl[256]   = {};
+
+// ── OTA download task (launched by ota_update WS command or /update/fetch) ───
+
+static void _otaTask(void*) {
+  Serial.printf("[OTA] Downloading: %s\n", _otaUrl);
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, _otaUrl);
+  http.setTimeout(60000);
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  int code = http.GET();
+  if (code == HTTP_CODE_OK) {
+    int len = http.getSize();
+    WiFiClient* stream = http.getStreamPtr();
+    if (Update.begin(len > 0 ? len : UPDATE_SIZE_UNKNOWN)) {
+      Update.writeStream(*stream);
+      if (Update.end(true)) {
+        Serial.println("[OTA] Done, rebooting");
+        http.end();
+        delay(500);
+        ESP.restart();
+      } else {
+        Update.printError(Serial);
+      }
+    } else {
+      Update.printError(Serial);
+    }
+  } else {
+    Serial.printf("[OTA] HTTP error: %d\n", code);
+  }
+  http.end();
+  vTaskDelete(nullptr);
+}
 
 // ── NVS ──────────────────────────────────────────────────────────────────────
 
@@ -110,6 +149,7 @@ inline void pushState() {
   }
 
   doc["boardId"] = WiFiMgr::getScoreboardId();
+  doc["version"] = FIRMWARE_VERSION;
   doc["pedals"].to<JsonArray>();
 
   String json;
@@ -184,6 +224,13 @@ static void _handleCommand(const String& payload) {
     pushState();
   } else if (strcmp(action, "sleep") == 0) {
     ScoreActions::activateSleep();
+  } else if (strcmp(action, "ota_update") == 0) {
+    const char* urlVal = doc["url"] | "";
+    if (strlen(urlVal) > 0 && strlen(urlVal) < sizeof(_otaUrl)) {
+      strlcpy(_otaUrl, urlVal, sizeof(_otaUrl));
+      Serial.printf("[OTA] Command received: %s\n", _otaUrl);
+      xTaskCreate(_otaTask, "ota_dl", 16384, nullptr, 2, nullptr);
+    }
   }
 }
 
