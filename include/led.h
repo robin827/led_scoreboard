@@ -153,12 +153,24 @@ inline void _applyServeSmall(const Score& score, uint8_t breathe) {
 // ─── Score render ─────────────────────────────────────────────────────────────
 
 inline void _updateSmall(const Score& score, uint8_t breathe) {
-  // Digit "1" visual center is 0.5px right; shift Team A left by 1 to keep display symmetric
-  int dAs_t = score.scoreA / 10, dAs_u = score.scoreA % 10;
-  drawDigit(dAs_t, 2 + (dAs_t == 1 ? -1 : 0), 0, COLOR_A);
-  drawDigit(dAs_u, 7 + (dAs_u == 1 ? -1 : 0), 0, COLOR_A);
-  drawDigit(score.scoreB / 10, 13, 0, COLOR_B);
-  drawDigit(score.scoreB % 10, 18, 0, COLOR_B);
+  // Scores < 10: single digit centered in the two-digit zone (x=2..10 for A, x=13..21 for B).
+  // Scores >= 10: two digits as usual.
+  // Digit "1" visual center is 0.5px right; shift left by 1 to compensate.
+  if (score.scoreA < 10) {
+    int d = score.scoreA;
+    drawDigit(d, 5, 0, COLOR_A);
+  } else {
+    int dAs_t = score.scoreA / 10, dAs_u = score.scoreA % 10;
+    drawDigit(dAs_t, 2 + (dAs_t == 1 ? -1 : 0), 0, COLOR_A);
+    drawDigit(dAs_u, 7 + (dAs_u == 1 ? -1 : 0), 0, COLOR_A);
+  }
+  if (score.scoreB < 10) {
+    int d = score.scoreB;
+    drawDigit(d, 15 + (d == 1 ? -1 : 0), 0, COLOR_B);
+  } else {
+    drawDigit(score.scoreB / 10, 13, 0, COLOR_B);
+    drawDigit(score.scoreB % 10, 18, 0, COLOR_B);
+  }
 
   // Set scores: 3×4 digit glyphs in extension rows (y=8..11)
   drawSetDigitSm(score.setA, 5,  Config::NUM_ROWS, COLOR_A);
@@ -334,7 +346,7 @@ inline void rotationAnimation() {
 }
 
 // Sleep animation: 4 LEDs centred (cols 10-13, row 5), yellow→cyan travelling wave
-inline void showSleepAnimation(uint8_t brightness) {
+inline void showSleepAnimation() {
   FastLED.clear();
   uint8_t phase = (uint8_t)(millis() / 10);  // 256 × 10 ms = 2.56 s cycle
   static const CRGB palette[4] = {
@@ -344,7 +356,7 @@ inline void showSleepAnimation(uint8_t brightness) {
     CRGB(  0, 255, 255),  // cyan
   };
   for (int i = 0; i < 4; i++) {
-    uint8_t b = scale8(sin8(phase - (uint8_t)(i * 64)), brightness);
+    uint8_t b = sin8(phase - (uint8_t)(i * 64));
     CRGB col = palette[i];
     col.nscale8(b);
     _leds[xy(10 + i, 5)] = col;

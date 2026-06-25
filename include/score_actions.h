@@ -132,20 +132,24 @@ inline bool apply(const char* cmd) {
     return false;
   }
 
-  // Known game command cancels break timer without scoring
+  // Known game command cancels break timer without scoring (reset is exempt — it executes regardless)
   if (_timerActive) {
     _timerActive = false;
-    LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
-    return true;
+    if (strcmp(cmd, "reset") != 0) {
+      LED::update(currentScore);
+      xSemaphoreGive(scoreMutex);
+      return true;
+    }
   }
 
-  // Known game command cancels timeout without scoring
+  // Known game command cancels timeout without scoring (reset is exempt — it executes regardless)
   if (_timeoutActive) {
     _timeoutActive = false;
-    LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
-    return true;
+    if (strcmp(cmd, "reset") != 0) {
+      LED::update(currentScore);
+      xSemaphoreGive(scoreMutex);
+      return true;
+    }
   }
 
   bool changed = true;

@@ -10,6 +10,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Preferences.h>
+#include <atomic>
 #include "config.h"
 #include "mode.h"
 
@@ -19,9 +20,9 @@ static Preferences _prefs;
 static String      _cachedSsid    = "";
 static String      _cachedPass    = "";
 static String      _scoreboardId  = "";
-static bool        _credsCached   = false;
-static bool        _online        = false;
-static bool        _connecting    = false;
+static bool              _credsCached   = false;
+static std::atomic<bool> _online        {false};
+static bool              _connecting    = false;
 static uint32_t    _lastRetryTime = 0;
 
 // ── Credentials NVS ───────────────────────────────────────────────────────
@@ -65,7 +66,7 @@ inline void clearCredentials() {
 static void _onEvent(WiFiEvent_t event) {
   switch (event) {
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-      _online = true; _connecting = false;
+      _online.store(true, std::memory_order_relaxed); _connecting = false;
       WiFi.setSleep(false);  // modem sleep disabled — ESP-NOW drops packets when radio is sleeping
       Serial.printf("[WiFi] Connected — STA: %s | AP: %s\n",
         WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str());
@@ -73,7 +74,7 @@ static void _onEvent(WiFiEvent_t event) {
 
     case ARDUINO_EVENT_WIFI_STA_LOST_IP:
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      _online = false;
+      _online.store(false, std::memory_order_relaxed);
       _connecting = false;
       _lastRetryTime = millis();
       Serial.println("[WiFi] Disconnected — retry in 25s");
@@ -121,7 +122,7 @@ inline void init() {
     _scoreboardId.c_str(), WiFi.softAPIP().toString().c_str());
 
   String ssid, pass;
-  if (!Mode::isLocal() && loadCredentials(ssid, pass)) {
+  if (Mode::getIntended() != AppMode::LOCAL && loadCredentials(ssid, pass)) {
     Serial.printf("[WiFi] Connecting to '%s'...\n", ssid.c_str());
     _connecting = true;
     WiFi.begin(ssid.c_str(), pass.c_str());
@@ -149,7 +150,7 @@ inline void tick() {
 
 // ── Accessors ─────────────────────────────────────────────────────────────
 
-inline bool     isOnline()        { return _online; }
+inline bool     isOnline()        { return _online.load(std::memory_order_relaxed); }
 inline bool     isConnecting()    { return _connecting; }
 inline String   localIP()         { return WiFi.localIP().toString(); }
 inline String   apIP()            { return WiFi.softAPIP().toString(); }

@@ -144,16 +144,7 @@ void setup() {
   Serial.println("[4/4] Init Portal...");
   Portal::init();
 
-  if (Mode::isCentral()) {
-    WsClient::init(WsClient::loadServerIp());
-    Serial.println("[MODE] Central");
-  } else if (Mode::isFirebase()) {
-    Firebase::loadPollInterval();
-    xTaskCreatePinnedToCore(firebaseTask, "firebase", 8192, nullptr, 1, &firebaseTaskHandle, 0);
-    Serial.println("[MODE] Firebase");
-  } else {
-    Serial.println("[MODE] Local");
-  }
+  // Network services start in Portal::tick() once WiFi connects, not here.
 
   LED::update(currentScore);
 
@@ -180,7 +171,7 @@ void loop() {
     if (_now - _lastSleepFrame >= 33) {
       _lastSleepFrame = _now;
       xSemaphoreTake(scoreMutex, portMAX_DELAY);
-      LED::showSleepAnimation(ScoreActions::getPreSleepBrightness());
+      LED::showSleepAnimation();
       xSemaphoreGive(scoreMutex);
     }
     delay(10);

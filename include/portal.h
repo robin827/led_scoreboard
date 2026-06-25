@@ -22,8 +22,11 @@ extern void firebaseTask(void*);
 
 namespace Portal {
 
-static WebServer *server = nullptr;
-static DNSServer dns;
+static WebServer *server           = nullptr;
+static DNSServer  dns;
+static bool       _serviceOnline   = false;   // confirmed state driving service lifecycle
+static uint32_t   _offlineGraceStart = 0;
+static constexpr uint32_t OFFLINE_GRACE_MS = 5000;
 
 // HTML moderne avec mode selector + channel + WiFi scan
 static const char HTML[] PROGMEM = R"rawhtml(
@@ -334,7 +337,7 @@ details[open] .collapsible-summary::after{transform:rotate(-180deg)}
     </div>
   </div>
 
-  <div class="settings">
+  <div class="settings" id="networkModeSection">
     <div class="setting-group">
       <label class="setting-label">Network Mode</label>
       <div class="mode-selector">
@@ -646,6 +649,9 @@ async function refresh() {
       status.textContent = 'Offline';
       btnDisc.style.display = 'none';
     }
+
+    const nmSection = document.getElementById('networkModeSection');
+    if (nmSection) nmSection.style.display = (d.online && d.ssid) ? '' : 'none';
 
     if (d.mode !== undefined) _applyModeUI(d.mode);
     const _fbCh = document.getElementById('fbChannel');
@@ -1167,6 +1173,38 @@ inline void tick() {
   dns.processNextRequest();
   server->handleClient();
   if (!ScoreActions::isDimActive()) LED::tick();
+
+  bool online = WiFiMgr::isOnline();
+  if (!_serviceOnline && online) {
+    // Confirmed online — restore intended mode immediately.
+    _offlineGraceStart = 0;
+    _serviceOnline = true;
+    AppMode intended = Mode::getIntended();
+    if (intended == AppMode::CENTRAL) {
+      Mode::setEffective(AppMode::CENTRAL);
+      WsClient::init(WsClient::loadServerIp());
+    } else if (intended == AppMode::FIREBASE) {
+      Mode::setEffective(AppMode::FIREBASE);
+      Firebase::loadPollInterval();
+      xTaskCreatePinnedToCore(firebaseTask, "firebase", 8192, nullptr, 1, &firebaseTaskHandle, 0);
+    }
+  } else if (_serviceOnline && !online) {
+    // Start or check grace period before tearing down — avoids reacting to brief hiccups.
+    if (_offlineGraceStart == 0) _offlineGraceStart = millis();
+    if ((millis() - _offlineGraceStart) >= OFFLINE_GRACE_MS) {
+      _serviceOnline = false;
+      _offlineGraceStart = 0;
+      AppMode cur = Mode::get();
+      if (cur == AppMode::CENTRAL) {
+        WsClient::stop();
+      } else if (cur == AppMode::FIREBASE) {
+        if (firebaseTaskHandle) { vTaskDelete(firebaseTaskHandle); firebaseTaskHandle = nullptr; }
+      }
+      if (cur != AppMode::LOCAL) Mode::setEffective(AppMode::LOCAL);
+    }
+  } else {
+    _offlineGraceStart = 0;  // online and stable — reset grace timer
+  }
 }
 
 } // namespace Portal
