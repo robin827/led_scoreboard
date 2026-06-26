@@ -360,10 +360,15 @@ details[open] .collapsible-summary::after{transform:rotate(-180deg)}
 
   <div class="settings">
     <div class="setting-group" id="wifiGroup">
-      <label class="setting-label">WiFi <span id="wifiStatus" class="status-badge status-offline">Offline</span></label>
-      <button class="btn btn-scan" id="btnScan" onclick="scanWiFi()">Scan Networks</button>
-      <div class="network-list" id="networkList" style="display:none"></div>
-      <button class="btn-disconnect" id="btnDisconnect" style="display:none" onclick="disconnectWiFi()">Disconnect from <span id="connectedSSID"></span></button>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <label class="setting-label" style="margin:0">WiFi <span id="wifiStatus" class="status-badge status-offline">Offline</span></label>
+        <button id="wifiToggleBtn" data-enabled="0" onclick="toggleWifi()" style="padding:6px 12px;background:var(--elem);color:var(--accent);border:1px solid var(--accent);border-radius:8px;font-size:0.8rem;cursor:pointer">Enable</button>
+      </div>
+      <div id="wifiControls" style="display:none">
+        <button class="btn btn-scan" id="btnScan" onclick="scanWiFi()">Scan Networks</button>
+        <div class="network-list" id="networkList" style="display:none"></div>
+        <button class="btn-disconnect" id="btnDisconnect" style="display:none" onclick="disconnectWiFi()">Disconnect from <span id="connectedSSID"></span></button>
+      </div>
     </div>
 
     <div class="setting-group" id="centralSection">
@@ -672,6 +677,17 @@ async function refresh() {
     const nmSection = document.getElementById('networkModeSection');
     if (nmSection) nmSection.style.display = (d.online && d.ssid) ? '' : 'none';
 
+    const wifiToggle = document.getElementById('wifiToggleBtn');
+    if (wifiToggle && d.wifiEnabled !== undefined) {
+      const en = d.wifiEnabled;
+      wifiToggle.dataset.enabled = en ? '1' : '0';
+      wifiToggle.textContent = en ? 'Disable' : 'Enable';
+      wifiToggle.style.color = en ? 'var(--b)' : 'var(--accent)';
+      wifiToggle.style.borderColor = en ? 'rgba(var(--b-rgb),0.5)' : 'var(--accent)';
+      const wc = document.getElementById('wifiControls');
+      if (wc) wc.style.display = en ? 'block' : 'none';
+    }
+
     if (d.mode !== undefined) _applyModeUI(d.mode);
     const _fbCh = document.getElementById('fbChannel');
     if (_fbCh && d.fbChannel !== undefined) _fbCh.value = d.fbChannel;
@@ -898,6 +914,14 @@ async function saveFbPoll() {
   try { await fetch('/firebase/pollinterval', {method:'POST', body: String(val)}); } catch(e) {}
 }
 
+async function toggleWifi() {
+  const btn = document.getElementById('wifiToggleBtn');
+  const isEnabled = btn.dataset.enabled === '1';
+  await fetch(isEnabled ? '/wifi/disable' : '/wifi/enable', {method:'POST'}).catch(()=>{});
+  await refresh();
+  if (!isEnabled) scanWiFi();
+}
+
 setInterval(refresh, 2000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 refresh();
@@ -1061,6 +1085,7 @@ inline void init() {
     json += "\"winPoints\":" + String(currentScore.winPoints) + ",";
     json += "\"brightness\":" + String(LED::getBrightness()) + ",";
     json += "\"online\":" + String(WiFiMgr::isOnline() ? "true" : "false") + ",";
+    json += "\"wifiEnabled\":" + String(WiFiMgr::isStaEnabled() ? "true" : "false") + ",";
     json += "\"ssid\":\"" + WiFiMgr::getSSID() + "\",";
     json += "\"rssi\":" + String(WiFiMgr::getRSSI()) + ",";
     json += "\"boardId\":\"" + WiFiMgr::getScoreboardId() + "\",";
@@ -1208,7 +1233,17 @@ inline void init() {
     WiFi.disconnect();
     server->send(200, "text/plain", "Credentials cleared");
   });
-  
+
+  server->on("/wifi/enable", HTTP_POST, []() {
+    WiFiMgr::enableSta();
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/wifi/disable", HTTP_POST, []() {
+    WiFiMgr::disableSta();
+    server->send(200, "text/plain", "OK");
+  });
+
   // Brightness
   server->on("/brightness", HTTP_POST, []() {
     ScoreActions::notifyActivity();

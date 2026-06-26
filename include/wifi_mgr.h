@@ -23,6 +23,7 @@ static String      _scoreboardId  = "";
 static bool              _credsCached   = false;
 static std::atomic<bool> _online        {false};
 static bool              _connecting    = false;
+static bool              _staEnabled    = false;
 static uint32_t    _lastRetryTime = 0;
 
 // ── Credentials NVS ───────────────────────────────────────────────────────
@@ -110,6 +111,7 @@ inline String scanNetworks() {
 inline void init() {
   _prefs.begin("wifi", false);
   _scoreboardId = _prefs.getString("boardId", SCOREBOARD_ID);
+  _staEnabled   = _prefs.getBool("staEn", false);
   _prefs.end();
 
   WiFi.onEvent(_onEvent);
@@ -118,11 +120,12 @@ inline void init() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(_scoreboardId.c_str(), AP_PASSWORD);
   delay(500);
-  Serial.printf("[WiFi] AP started: %s | IP: %s\n",
-    _scoreboardId.c_str(), WiFi.softAPIP().toString().c_str());
+  Serial.printf("[WiFi] AP started: %s | IP: %s | STA %s\n",
+    _scoreboardId.c_str(), WiFi.softAPIP().toString().c_str(),
+    _staEnabled ? "enabled" : "disabled");
 
   String ssid, pass;
-  if (Mode::getIntended() != AppMode::LOCAL && loadCredentials(ssid, pass)) {
+  if (_staEnabled && loadCredentials(ssid, pass)) {
     Serial.printf("[WiFi] Connecting to '%s'...\n", ssid.c_str());
     _connecting = true;
     WiFi.begin(ssid.c_str(), pass.c_str());
@@ -138,8 +141,7 @@ inline void tick() {
     WiFi.softAP(_scoreboardId.c_str(), AP_PASSWORD);
   }
 
-  // Constant 15s retry — skip in LOCAL mode or while already connecting
-  if (_online || _connecting) return;
+  if (!_staEnabled || _online || _connecting) return;
   if (!_credsCached || _cachedSsid.length() == 0) return;
   if ((millis() - _lastRetryTime) < 25000u) return;
 
@@ -172,5 +174,31 @@ inline void setScoreboardId(const String& id) {
 inline void resetRetryCount() {
   _lastRetryTime = 0;
 }
+
+inline void enableSta() {
+  _staEnabled = true;
+  _prefs.begin("wifi", false);
+  _prefs.putBool("staEn", true);
+  _prefs.end();
+  String ssid, pass;
+  if (loadCredentials(ssid, pass)) {
+    _connecting = true;
+    WiFi.begin(ssid.c_str(), pass.c_str());
+  }
+  Serial.println("[WiFi] STA enabled");
+}
+
+inline void disableSta() {
+  _staEnabled = false;
+  _prefs.begin("wifi", false);
+  _prefs.putBool("staEn", false);
+  _prefs.end();
+  _online = false;
+  _connecting = false;
+  WiFi.disconnect(false);
+  Serial.println("[WiFi] STA disabled");
+}
+
+inline bool isStaEnabled() { return _staEnabled; }
 
 } // namespace WiFiMgr
