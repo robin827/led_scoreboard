@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include "score.h"
 #include "led.h"
+#include "score_logger.h"
 
 extern Score currentScore;
 extern SemaphoreHandle_t scoreMutex;
@@ -171,7 +172,7 @@ inline bool apply(const char* cmd) {
     else { ok = currentScore.nextSet(); changed = ok; if (ok) didNextSet = true; }
   }
   else if (strcmp(cmd, "nextset") == 0) { ok = currentScore.nextSet(); changed = ok; if (ok) didNextSet = true; }
-  else if (strcmp(cmd, "reset")   == 0) { currentScore.reset(); }
+  else if (strcmp(cmd, "reset")   == 0) { currentScore.reset(); ScoreLogger::reset(); }
   else { changed = false; ok = false; }
 
   if (didIncrement) {
@@ -195,7 +196,10 @@ inline bool apply(const char* cmd) {
     }
   }
 
-  if (changed) LED::update(currentScore);
+  if (changed) {
+    LED::update(currentScore);
+    ScoreLogger::log(currentScore);
+  }
   xSemaphoreGive(scoreMutex);
   return ok;
 }

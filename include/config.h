@@ -7,7 +7,7 @@
 // ── Firmware version & OTA manifest ──────────────────────────────────────────
 // Bump FIRMWARE_VERSION on every release; publish a matching manifest JSON at
 // MANIFEST_URL with the fields: { "version", "url", "notes" }
-#define FIRMWARE_VERSION  "1.0.4"
+#define FIRMWARE_VERSION  "1.0.5"
 #define MANIFEST_URL      "https://api.github.com/repos/robin827/led_scoreboard/releases/latest"
 
 // ── Scoreboard identity (used for AP name, ESP-NOW beacon, etc.) ──────────

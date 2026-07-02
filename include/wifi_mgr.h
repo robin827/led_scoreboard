@@ -88,10 +88,6 @@ static void _onEvent(WiFiEvent_t event) {
 // ── Scan networks ──────────────────────────────────────────────────────────
 
 inline String scanNetworks() {
-  if (_connecting) {
-    Serial.println("[WiFi] Scan skipped: connection in progress");
-    return "[]";
-  }
   Serial.println("[WiFi] Scanning...");
   int n = WiFi.scanNetworks();
   String json = "[";
@@ -119,6 +115,7 @@ inline void init() {
   WiFi.setAutoReconnect(false);   // we manage retries ourselves via tick()
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(_scoreboardId.c_str(), AP_PASSWORD);
+  WiFi.setSleep(false);  // must stay off for ESP-NOW; not re-applied by STA events
   delay(500);
   Serial.printf("[WiFi] AP started: %s | IP: %s | STA %s\n",
     _scoreboardId.c_str(), WiFi.softAPIP().toString().c_str(),
@@ -142,12 +139,14 @@ inline void tick() {
   }
 
   if (!_staEnabled || _online || _connecting) return;
-  if (!_credsCached || _cachedSsid.length() == 0) return;
   if ((millis() - _lastRetryTime) < 25000u) return;
 
-  Serial.printf("[WiFi] Retrying '%s'...\n", _cachedSsid.c_str());
+  String ssid, pass;
+  if (!loadCredentials(ssid, pass)) return;
+
+  Serial.printf("[WiFi] Retrying '%s'...\n", ssid.c_str());
   _connecting = true;
-  WiFi.begin(_cachedSsid.c_str(), _cachedPass.c_str());
+  WiFi.begin(ssid.c_str(), pass.c_str());
 }
 
 // ── Accessors ─────────────────────────────────────────────────────────────
@@ -180,11 +179,8 @@ inline void enableSta() {
   _prefs.begin("wifi", false);
   _prefs.putBool("staEn", true);
   _prefs.end();
-  String ssid, pass;
-  if (loadCredentials(ssid, pass)) {
-    _connecting = true;
-    WiFi.begin(ssid.c_str(), pass.c_str());
-  }
+  // Defer WiFi.begin() to tick() — gives the auto-scan ~6s to complete first
+  _lastRetryTime = millis() - 19000;
   Serial.println("[WiFi] STA enabled");
 }
 
