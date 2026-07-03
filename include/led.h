@@ -93,7 +93,13 @@ inline void drawSetDigitSm(int d, int sx, int sy, CRGB col) {
 static Score    _animScore;
 static uint32_t _lastTick         = 0;
 static bool     _timerMode        = false;
-static bool     _rotationLoopActive = false;
+
+// Rotation ring is shown whenever the score sits at a rotation point — derived
+// live from state, just like the serve indicator, so it reflects corrections
+// (decrements) too, not just the increment that first reached the threshold.
+inline bool _isRotationPoint(const Score& score) {
+  return !isSetWon(score) && ((score.scoreA + score.scoreB) % 4) == 3;
+}
 
 inline uint8_t _breatheFactor() {
   return sin8((uint8_t)(millis() / 5));
@@ -177,6 +183,7 @@ inline void _updateSmall(const Score& score, uint8_t breathe) {
   drawSetDigitSm(score.setB, 16, Config::NUM_ROWS, COLOR_B);
 
   _applyServeSmall(score, breathe);
+  if (_isRotationPoint(score)) _drawRotationLoop();
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -263,9 +270,6 @@ inline void setRawBrightness(uint8_t brightness) {
 }
 
 inline void update(const Score& score) {
-  if (score.scoreA != _animScore.scoreA || score.scoreB != _animScore.scoreB ||
-      score.setA   != _animScore.setA   || score.setB   != _animScore.setB)
-    _rotationLoopActive = false;
   _animScore = score;
   _timerMode = false;
   FastLED.clear();
@@ -280,7 +284,7 @@ inline void tick() {
   _lastTick = now;
   if (_timerMode) return;
   _applyServeSmall(_animScore, _breatheFactor());
-  if (_rotationLoopActive) _drawRotationLoop();
+  if (_isRotationPoint(_animScore)) _drawRotationLoop();
   FastLED.show();
 }
 
@@ -341,8 +345,7 @@ inline void rotationAnimation() {
       delay(PAUSE_MS);
     }
   }
-  _rotationLoopActive = true;
-  update(_animScore);  // same score → flag stays set; loop starts in tick()
+  update(_animScore);  // redraw; ring resumes automatically since score is still at the rotation point
 }
 
 // Sleep animation: 4 LEDs centred (cols 10-13, row 5), yellow→cyan travelling wave

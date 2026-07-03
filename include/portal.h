@@ -76,10 +76,9 @@ static const char HTML[] PROGMEM = R"rawhtml(
 --a-rgb:245,197,24;--b-rgb:232,62,140;--accent-rgb:128,112,168;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px 20px calc(84px + env(safe-area-inset-bottom))}
 body.top-align{align-items:flex-start}
 .container{width:100%;max-width:400px}
-.header{text-align:center;margin-bottom:32px}
 .logo{font-size:0.7rem;letter-spacing:4px;text-transform:uppercase;color:var(--accent);margin-bottom:8px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px}
 .pulse{width:6px;height:6px;border-radius:50%;background:var(--elem);flex-shrink:0;transition:background .3s}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.15}}
@@ -116,7 +115,7 @@ body.top-align{align-items:flex-start}
 .settings{background:var(--card);border-radius:20px;padding:20px;margin-top:16px}
 .setting-group{margin-bottom:20px}
 .setting-group:last-child{margin-bottom:0}
-.setting-label{font-size:0.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.setting-label{font-size:0.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--a);font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:6px}
 .mode-selector{display:flex;gap:8px}
 .mode-btn{flex:1;padding:10px 8px;border:none;border-radius:8px;background:var(--elem);color:var(--accent);font-size:0.85rem;font-weight:600;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:3px}
 .mode-btn.active{background:var(--a);color:var(--bg)}
@@ -188,11 +187,12 @@ select.input option{background:var(--elem)}
 .win-btn.active{background:var(--a);color:var(--bg)}
 .btn-icon{background:none;border:none;color:var(--accent);cursor:pointer;padding:4px;display:flex;align-items:center;border-radius:6px;-webkit-tap-highlight-color:transparent}
 .btn-icon:active{opacity:0.6}
+.sleep-btn{flex-shrink:0;background:var(--elem);border-radius:10px;padding:7px;transition:background .2s,color .2s}
+.sleep-btn.active{background:var(--a);color:var(--bg)}
 .page{display:none}.page.active{display:block}
-.page-header{display:flex;align-items:center;gap:12px;margin-bottom:24px}
-.page-title{font-size:0.8rem;letter-spacing:3px;text-transform:uppercase;color:var(--accent);font-weight:600;flex:1;text-align:center}
-.btn-back{background:none;border:none;color:var(--accent);cursor:pointer;font-size:0.85rem;font-weight:600;display:flex;align-items:center;gap:5px;padding:4px 0;-webkit-tap-highlight-color:transparent}
-.btn-back:active{opacity:0.6}
+.app-header{text-align:center;margin-bottom:24px}
+.page-subtitle{display:flex;align-items:center;justify-content:center;gap:6px;font-size:0.68rem;letter-spacing:2px;text-transform:uppercase;color:var(--accent);font-weight:600;margin-top:4px}
+.page-subtitle svg{flex-shrink:0}
 @keyframes noticeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
 .rotate-notice{background:rgba(var(--accent-rgb),0.12);color:var(--accent);border:1px solid rgba(var(--accent-rgb),0.25);border-radius:10px;padding:10px 16px;text-align:center;font-size:0.82rem;font-weight:600;letter-spacing:1px;margin-bottom:12px;display:none}
 .rotate-notice.visible{display:block;animation:noticeIn .3s ease}
@@ -211,12 +211,6 @@ select.input option{background:var(--elem)}
 .srv-corner.active-b{opacity:1;background:rgba(var(--b-rgb),.18)}
 .team-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:10px}
 .team-name{font-size:0.65rem;letter-spacing:2px;text-transform:uppercase;color:var(--accent)}
-.collapsible-summary{display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;list-style:none;outline:none;-webkit-tap-highlight-color:transparent;user-select:none}
-.collapsible-summary:focus{outline:none}
-.collapsible-summary::-webkit-details-marker{display:none}
-.collapsible-summary::after{content:'▾';font-size:0.9rem;font-weight:400;transition:transform .2s}
-details[open] .collapsible-summary::after{transform:rotate(-180deg)}
-.collapsible-body{margin-top:14px}
 .wifi-toggle{position:relative;display:inline-flex;align-items:center;width:68px;height:28px;border-radius:14px;background:rgba(255,255,255,0.12);cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;transition:background .22s;flex-shrink:0}
 .wifi-toggle[data-enabled="1"]{background:var(--accent)}
 .wt-knob{position:absolute;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 5px rgba(0,0,0,.4);transition:left .22s;pointer-events:none;z-index:1}
@@ -226,22 +220,58 @@ details[open] .collapsible-summary::after{transform:rotate(-180deg)}
 .wt-on{left:9px;color:#fff;opacity:0}
 .wifi-toggle[data-enabled="1"] .wt-off{opacity:0}
 .wifi-toggle[data-enabled="1"] .wt-on{opacity:1}
+.bottom-nav{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:space-around;align-items:center;background:var(--card);border-top:1px solid var(--elem);padding:8px 8px calc(8px + env(safe-area-inset-bottom));box-shadow:0 -4px 20px rgba(0,0,0,0.35);z-index:500}
+.nav-item{display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:none;color:var(--accent);font-size:0.62rem;font-weight:600;letter-spacing:0.3px;cursor:pointer;padding:6px 20px;border-radius:14px;-webkit-tap-highlight-color:transparent;transition:background .2s,color .2s;user-select:none}
+.nav-item svg{pointer-events:none}
+.nav-item.active{color:var(--a);background:rgba(var(--a-rgb),0.14)}
+.card{background:var(--card);border-radius:16px;padding:16px;margin-bottom:12px}
+.lbl{font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--a);font-weight:700;margin-bottom:8px;display:block}
+.inp{width:100%;background:var(--elem);border:1px solid var(--border);border-radius:8px;color:#fff;padding:10px 12px;font-size:.9rem;outline:none;margin-bottom:8px}
+.inp:focus{border-color:var(--a)}
+select.inp{-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238070a8' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+select.inp option{background:var(--elem)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+.two .inp{margin-bottom:0}
+.btn-y{background:var(--a);color:var(--bg)}
+.btn-r{background:rgba(232,62,140,.12);color:var(--b);border:1px solid rgba(232,62,140,.3)}
+.gw{background:#2a2d31;border-radius:8px;padding:0;margin-bottom:10px;line-height:0}
+canvas{display:block;width:100%}
+video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8px}
+.st{font-size:.78rem;line-height:1.5;padding:10px 12px;border-radius:8px;margin-bottom:8px}
+.st-n{background:var(--elem);color:var(--accent)}
+.st-ok{background:rgba(110,231,183,.08);color:#6ee7b7;border:1px solid rgba(110,231,183,.2)}
+.st-err{background:rgba(232,62,140,.08);color:var(--b);border:1px solid rgba(232,62,140,.2)}
+.hint{font-size:.78rem;color:var(--accent);line-height:1.5;margin-bottom:10px}
+#pageOverlay .btn{width:100%;margin-bottom:8px}
+#pageOverlay .btn:disabled{opacity:.35;cursor:default}
+.result{margin-top:12px;background:var(--elem);border-radius:10px;padding:12px}
+.result-row{display:flex;justify-content:space-between;font-size:.82rem;margin-bottom:4px}
+.rlbl{color:var(--accent);font-size:.68rem;letter-spacing:1px;text-transform:uppercase}
+.notes{font-size:.75rem;color:var(--accent);margin-top:6px;line-height:1.4}
+.ok{color:#66dd66;font-size:.82rem;text-align:center;margin-top:8px}
 </style>
 </head>
 <body>
 <div class="container">
-<div id="pageMain" class="page active">
-  <div class="header">
-    <div style="display:flex;align-items:center;justify-content:space-between">
-      <div class="logo" id="pageTitle">Roundnet Scoreboard</div>
-      <button class="btn-icon" onclick="showPage('pageSettings')" aria-label="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
-    </div>
-    <div id="wifiIndicator" class="wifi-indicator" style="display:none"><svg width="13" height="10" viewBox="0 0 13 10" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><circle cx="6.5" cy="8.5" r="1.2"/><path d="M4 5.8C4.7 5 5.6 4.6 6.5 4.6S8.3 5 9 5.8" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/><path d="M1.5 3C2.9 1.5 4.6.7 6.5.7S10.1 1.5 11.5 3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/></svg><span id="wifiIndicatorSSID"></span></div>
-  </div>
 
+<div class="app-header">
+  <div class="logo" id="pageTitle">Roundnet Scoreboard</div>
+  <div class="page-subtitle" id="pageSubtitle">
+    <svg id="subtitleIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+    <span id="subtitleText">Score Input</span>
+  </div>
+  <div id="wifiIndicator" class="wifi-indicator" style="display:none"><svg width="13" height="10" viewBox="0 0 13 10" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><circle cx="6.5" cy="8.5" r="1.2"/><path d="M4 5.8C4.7 5 5.6 4.6 6.5 4.6S8.3 5 9 5.8" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/><path d="M1.5 3C2.9 1.5 4.6.7 6.5.7S10.1 1.5 11.5 3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" fill="none"/></svg><span id="wifiIndicatorSSID"></span></div>
+</div>
+
+<div id="pageMain" class="page active">
   <div class="bri-compact">
     <div class="bri-compact-row"><span>Brightness</span><span><span id="brightVal">31</span>%</span></div>
-    <input type="range" id="brightness" class="slider slider-sm" min="1" max="255" value="80" oninput="setBrightness(this.value)">
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="btn-icon sleep-btn" onclick="sleepBtnClick()" aria-label="Sleep">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <input type="range" id="brightness" class="slider slider-sm" style="flex:1;margin-bottom:0" min="1" max="255" value="80" oninput="setBrightness(this.value)">
+    </div>
   </div>
 
   <div class="scoreboard">
@@ -300,9 +330,8 @@ details[open] .collapsible-summary::after{transform:rotate(-180deg)}
     </div>
   </div>
 
-  <details class="settings" style="margin-top:12px;padding:0">
-    <summary class="setting-label collapsible-summary" style="padding:7px 20px">Game Settings</summary>
-    <div class="collapsible-body" style="padding:0 20px 16px">
+  <div class="settings" style="margin-top:12px">
+    <label class="setting-label" style="margin-bottom:16px">Game Settings</label>
       <div class="setting-group">
         <label class="setting-label">Win Score</label>
         <div class="win-selector">
@@ -337,31 +366,11 @@ details[open] .collapsible-summary::after{transform:rotate(-180deg)}
           <button class="win-btn active" data-fmt="2" onclick="setFormat(2)">BO3</button>
         </div>
       </div>
-    </div>
-  </details>
-
-  <div class="settings" style="margin-top:12px">
-    <div class="setting-group" style="margin:0">
-      <button class="btn" style="width:100%;background:rgba(var(--b-rgb),0.1);color:var(--b);border:1px solid rgba(var(--b-rgb),0.3)"
-        onclick="openModal('Sleep','Put the scoreboard to sleep?','modal-ok-red','/sleepnow')">Sleep</button>
-    </div>
-  </div>
-
-  <div class="settings" style="margin-top:12px">
-    <div class="setting-group" style="margin:0">
-      <a href="/overlay" style="display:block;text-align:center;padding:14px;background:var(--elem);color:var(--accent);border-radius:12px;font-size:0.85rem;font-weight:600;text-decoration:none">&#127916; Video Overlay Export</a>
-    </div>
   </div>
 
 </div><!-- /pageMain -->
 
 <div id="pageSettings" class="page">
-  <div class="page-header">
-    <button class="btn-back" onclick="showPage('pageMain')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg> Back</button>
-    <span class="page-title">Settings</span>
-    <div style="width:40px"></div>
-  </div>
-
   <div class="settings">
     <div class="setting-group">
       <label class="setting-label">Scoreboard Name</label>
@@ -377,7 +386,9 @@ details[open] .collapsible-summary::after{transform:rotate(-180deg)}
     <div class="setting-group">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <label class="setting-label" style="margin:0">Battery Saver</label>
-        <button id="sleepBtn" data-sleeping="0" onclick="toggleSleep()" style="padding:6px 12px;background:var(--surface);color:var(--accent);border:1px solid var(--accent);border-radius:8px;font-size:0.8rem;cursor:pointer">Sleep now</button>
+        <button class="btn-icon sleep-btn" onclick="sleepBtnClick()" aria-label="Sleep">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
       </div>
       <div class="mode-selector">
         <button class="mode-btn" id="ds0"   onclick="setDimSleep(0)">Off<span class="mode-sub">always on</span></button>
@@ -446,13 +457,93 @@ details[open] .collapsible-summary::after{transform:rotate(-180deg)}
   </div>
 
   <div class="settings" style="margin-top:12px">
-    <div class="setting-group" style="margin:0">
-      <a href="/update" style="display:block;text-align:center;padding:14px;background:var(--elem);color:var(--accent);border-radius:12px;font-size:0.85rem;font-weight:600;text-decoration:none">Update Firmware</a>
-    </div>
+    <label class="setting-label" style="margin-bottom:16px">Firmware Update</label>
+      <div class="setting-group">
+        <div style="font-size:0.7rem;color:var(--accent);margin-bottom:10px">Current version: <span id="fwCur">&hellip;</span></div>
+        <button class="btn" style="width:100%;background:var(--elem);color:var(--accent)" id="btnFwCheck" onclick="checkUpdate()">Check for Updates</button>
+        <div id="fwCheckRes"></div>
+      </div>
+      <div class="setting-group" style="margin-bottom:0">
+        <label class="setting-label">Manual Upload (.bin)</label>
+        <input type="file" id="fwFile" accept=".bin" style="width:100%;background:var(--elem);border:1px solid var(--border);border-radius:8px;color:#fff;padding:10px;font-size:0.85rem;cursor:pointer;margin-bottom:10px">
+        <button class="btn" style="width:100%;background:var(--a);color:var(--bg)" id="btnFwUpload" onclick="uploadFirmware()">Upload &amp; Flash</button>
+        <div id="fwProg" style="display:none;margin-top:14px">
+          <div style="background:var(--elem);border-radius:4px;height:8px;overflow:hidden"><div id="fwBar" style="height:100%;background:var(--a);border-radius:4px;width:0;transition:width .2s"></div></div>
+          <div id="fwSt" style="font-size:0.78rem;color:var(--accent);margin-top:6px;text-align:center">Uploading&#8230;</div>
+        </div>
+      </div>
   </div>
 
 </div><!-- /pageSettings -->
+
+<div id="pageOverlay" class="page">
+  <div class="card">
+    <span class="lbl">Match Info</span>
+    <input class="inp" id="tournament" placeholder="Tournament (e.g. TSN #3)" oninput="redraw()">
+    <input class="inp" id="location"   placeholder="Location (e.g. Mulhouse)"  oninput="redraw()">
+    <div class="two">
+      <input class="inp" id="tA" placeholder="Team A" oninput="redraw()">
+      <input class="inp" id="tB" placeholder="Team B" oninput="redraw()">
+    </div>
+    <select class="inp" id="rnd" onchange="redraw()">
+      <option>Pool Play</option>
+      <option>RO32</option>
+      <option>RO16</option>
+      <option>RO8</option>
+      <option>Quarterfinals</option>
+      <option>Semifinals</option>
+      <option>Finals</option>
+    </select>
+  </div>
+
+  <div class="card">
+    <span class="lbl">Preview</span>
+    <div class="gw"><canvas id="cv" width="500" height="180" style="width:100%;display:block"></canvas></div>
+    <div id="logSt" class="st st-n">Loading score log&#8230;</div>
+  </div>
+
+  <div class="card">
+    <span class="lbl">Export Overlay Video</span>
+    <p class="hint">In your game video, measure the time from when the game started (score 0&#8211;0 visible) to when the first point was scored. Enter it below.</p>
+    <span class="lbl" style="margin-top:4px">Time from game start to first point</span>
+    <div class="two" style="margin-bottom:8px">
+      <div style="position:relative">
+        <input type="number" class="inp" id="syncMm" min="0" max="99" value="0" style="margin:0;text-align:center" oninput="updateDurInfo()">
+        <span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:.7rem;color:var(--accent);pointer-events:none">min</span>
+      </div>
+      <div style="position:relative">
+        <input type="number" class="inp" id="syncSs" min="0" max="59" value="0" style="margin:0;text-align:center" oninput="updateDurInfo()">
+        <span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:.7rem;color:var(--accent);pointer-events:none">sec</span>
+      </div>
+    </div>
+    <div id="durInfo" class="st st-n" style="display:none"></div>
+    <button class="btn btn-y" id="bRec" onclick="startRec()" disabled>Export Overlay Video</button>
+    <button class="btn btn-r" id="bStop" onclick="stopRec()" style="display:none">&#9632; Cancel Export</button>
+    <div id="pbar" style="display:none;height:6px;background:var(--elem);border-radius:3px;margin-bottom:8px;overflow:hidden">
+      <div id="pfill" style="height:100%;background:var(--a);width:0;transition:width .4s;border-radius:3px"></div>
+    </div>
+    <div id="recSt" class="st st-n" style="display:none"></div>
+    <button class="btn btn-y" id="bSave" onclick="saveVideo()" style="display:none">&#8681; Save Overlay to Phone</button>
+    <p class="hint" style="margin-top:8px;margin-bottom:0">In CapCut: add your game video, then add the overlay as a <b style="color:#fff">Picture in Picture</b> layer. Select the overlay clip &rarr; <b style="color:#fff">Effects &rarr; Chroma Key</b>, tap the green area, and it disappears. Position the card wherever you want on the frame. Align its start with the moment the game starts &#8212; scores appear automatically at the right time.</p>
+  </div>
+</div><!-- /pageOverlay -->
+
 </div><!-- /container -->
+
+<nav class="bottom-nav">
+  <button class="nav-item active" id="navMain" onclick="showPage('pageMain')" aria-label="Score">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+    <span>Score</span>
+  </button>
+  <button class="nav-item" id="navSettings" onclick="showPage('pageSettings')" aria-label="Settings">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    <span>Settings</span>
+  </button>
+  <button class="nav-item" id="navOverlay" onclick="showPage('pageOverlay')" aria-label="Video Overlay Export">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+    <span>Overlay</span>
+  </button>
+</nav>
 
 <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
   <div class="modal">
@@ -646,12 +737,16 @@ async function refresh() {
       document.querySelectorAll('[id^="ds"]').forEach(b =>
         b.classList.toggle('active', b.id === 'ds' + d.dimSleep));
     }
-    if (d.sleeping !== undefined) _updateSleepBtn(d.sleeping);
+    if (d.sleeping !== undefined) { _sleeping = d.sleeping; _updateSleepButtons(); }
     if (d.serverIp !== undefined && !_serverIpDirty) document.getElementById('serverIp').value = d.serverIp;
     if (d.wsConnected !== undefined) {
       const ws = document.getElementById('wsStatus');
       ws.className = 'status-badge ' + (d.wsConnected ? 'status-online' : 'status-offline');
       ws.textContent = d.wsConnected ? 'Connected' : 'Disconnected';
+    }
+    if (d.version !== undefined) {
+      const fwCur = document.getElementById('fwCur');
+      if (fwCur) fwCur.textContent = 'v' + d.version;
     }
     const hist = document.getElementById('setHistory');
     if (d.setsPlayed > 0 && d.histA && d.histB) {
@@ -773,9 +868,24 @@ async function setFormat(val) {
   try { await fetch('/format', {method:'POST', body: String(val)}); } catch(e) {}
 }
 
+const _NAV_FOR_PAGE = {pageMain:'navMain', pageSettings:'navSettings', pageOverlay:'navOverlay'};
+const _PAGE_INFO = {
+  pageMain:     {label:'Score Input',          icon:'<rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>'},
+  pageSettings: {label:'Settings',              icon:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'},
+  pageOverlay:  {label:'Video Overlay Export',  icon:'<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>'}
+};
+
 function showPage(id) {
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === id));
-  document.body.classList.toggle('top-align', id === 'pageSettings');
+  document.body.classList.toggle('top-align', id !== 'pageMain');
+  document.querySelectorAll('.nav-item').forEach(b =>
+    b.classList.toggle('active', b.id === _NAV_FOR_PAGE[id]));
+  const info = _PAGE_INFO[id];
+  if (info) {
+    document.getElementById('subtitleIcon').innerHTML = info.icon;
+    document.getElementById('subtitleText').textContent = info.label;
+  }
+  if (id === 'pageOverlay') fetchLog();
 }
 
 async function setDimSleep(secs) {
@@ -789,19 +899,19 @@ function applyCustomDim() {
   if (!isNaN(v) && v >= 0) setDimSleep(v);
 }
 
-function _updateSleepBtn(sleeping) {
-  const btn = document.getElementById('sleepBtn');
-  if (!btn) return;
-  btn.dataset.sleeping = sleeping ? '1' : '0';
-  btn.textContent = sleeping ? 'Wake up' : 'Sleep now';
-  btn.style.background = sleeping ? 'var(--accent)' : 'var(--surface)';
-  btn.style.color      = sleeping ? 'var(--bg)'     : 'var(--accent)';
+let _sleeping = false;
+
+function _updateSleepButtons() {
+  document.querySelectorAll('.sleep-btn').forEach(b => b.classList.toggle('active', _sleeping));
 }
 
-async function toggleSleep() {
-  const sleeping = document.getElementById('sleepBtn').dataset.sleeping === '1';
-  _updateSleepBtn(!sleeping);  // optimistic update
-  try { await fetch(sleeping ? '/wake' : '/sleepnow', {method:'POST'}); } catch(e) { refresh(); }
+function sleepBtnClick() {
+  if (_sleeping) {
+    _sleeping = false; _updateSleepButtons();  // optimistic update — waking is harmless, no confirm needed
+    action('/wake');
+  } else {
+    openModal('Sleep', 'Put the scoreboard to sleep?', 'modal-ok-red', '/sleepnow', 'Sleep');
+  }
 }
 
 async function setFirstServer(who) {
@@ -966,235 +1076,64 @@ async function toggleWifi() {
   if (!isEnabled) scanWiFi();
 }
 
-setInterval(refresh, 2000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-refresh();
-</script>
-</body>
-</html>
-)rawhtml";
-
-static const char OTA_HTML[] PROGMEM = R"rawhtml(
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Firmware Update</title>
-<style>
-:root{--bg:#1c1830;--card:#251f40;--elem:#3a3460;--border:#4a4478;--a:#f5c518;--b:#e83e8c;--accent:#8070a8}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
-.wrap{width:100%;max-width:360px}
-.hdr{text-align:center;margin-bottom:24px}
-.logo{font-size:.65rem;letter-spacing:4px;text-transform:uppercase;color:var(--accent);margin-bottom:6px;font-weight:600}
-h1{font-size:1.1rem;font-weight:700;margin-bottom:4px}
-.cur-ver{font-size:.75rem;color:var(--accent);margin-top:4px}
-.card{background:var(--card);border-radius:16px;padding:20px;margin-bottom:12px}
-.lbl{font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:10px}
-.btn{width:100%;padding:13px;border:none;border-radius:10px;font-size:.9rem;font-weight:600;cursor:pointer;background:var(--a);color:#1c1830}
-.btn:disabled{opacity:.5;cursor:default}
-.btn-sec{background:var(--elem);color:var(--accent)}
-.result{margin-top:12px;background:var(--elem);border-radius:10px;padding:12px}
-.result-row{display:flex;justify-content:space-between;font-size:.82rem;margin-bottom:4px}
-.rlbl{color:var(--accent);font-size:.68rem;letter-spacing:1px;text-transform:uppercase}
-.notes{font-size:.75rem;color:var(--accent);margin-top:6px;line-height:1.4}
-.ok{color:#66dd66;font-size:.82rem;text-align:center;margin-top:8px}
-input[type=file]{width:100%;background:var(--elem);border:1px solid var(--border);border-radius:8px;color:#fff;padding:10px;font-size:.85rem;cursor:pointer;margin-bottom:10px}
-.prog{display:none;margin-top:14px}
-.bar-bg{background:var(--elem);border-radius:4px;height:8px;overflow:hidden}
-.bar-fg{height:100%;background:var(--a);border-radius:4px;width:0;transition:width .2s}
-.st{font-size:.78rem;color:var(--accent);margin-top:6px;text-align:center}
-a.back{display:block;text-align:center;margin-top:14px;color:var(--accent);font-size:.82rem;text-decoration:none}
-</style>
-</head>
-<body>
-<div class="wrap">
-<div class="hdr">
-  <div class="logo">Roundnet Scoreboard</div>
-  <h1>Firmware Update</h1>
-  <div class="cur-ver">Current: <span id="cur">…</span></div>
-</div>
-
-<div class="card">
-  <div class="lbl">Check for Updates</div>
-  <button id="btn-check" class="btn btn-sec" onclick="checkUpdate()">Check Now</button>
-  <div id="check-res"></div>
-</div>
-
-<div class="card">
-  <div class="lbl">Manual Upload (.bin)</div>
-  <input type="file" id="f" accept=".bin">
-  <button id="btn-up" class="btn" onclick="go()">Upload &amp; Flash</button>
-  <div class="prog" id="prog">
-    <div class="bar-bg"><div class="bar-fg" id="bar"></div></div>
-    <div class="st" id="st">Uploading...</div>
-  </div>
-</div>
-<a href="/" class="back">&#8592; Back to Portal</a>
-</div>
-
-<script>
-fetch('/status').then(r=>r.json()).then(d=>{
-  document.getElementById('cur').textContent='v'+(d.version||'?');
-}).catch(()=>{ document.getElementById('cur').textContent='?'; });
-
-function checkUpdate(){
-  var btn=document.getElementById('btn-check'),res=document.getElementById('check-res');
-  btn.disabled=true; btn.textContent='Checking…';
-  fetch('/update/check',{method:'POST'}).then(r=>r.json()).then(d=>{
-    if(d.error){res.innerHTML='<div class="st" style="color:var(--b)">'+d.error+'</div>';return;}
-    var upToDate=d.latest===d.current;
-    res.innerHTML='<div class="result">'
-      +'<div class="result-row"><span class="rlbl">Latest</span><span>v'+d.latest+'</span></div>'
-      +(d.notes?'<div class="notes">'+d.notes+'</div>':'')
-      +(upToDate
-        ?'<div class="ok">✓ Up to date</div>'
-        :'<button class="btn" style="margin-top:12px" id="btn-apply" onclick="applyRemote(\''+d.url.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\')" >Install v'+d.latest+'</button>'
-         +'<div class="st" id="apply-st"></div>')
-      +'</div>';
-  }).catch(function(e){
-    res.innerHTML='<div class="st" style="color:var(--b)">'+e.message+'</div>';
-  }).finally(function(){
-    btn.disabled=false; btn.textContent='Check Now';
+// ── Firmware Update (pageSettings) ──────────────────────────────────────────
+function checkUpdate() {
+  const btn = document.getElementById('btnFwCheck'), res = document.getElementById('fwCheckRes');
+  btn.disabled = true; btn.textContent = 'Checking…';
+  fetch('/update/check', {method:'POST'}).then(r => r.json()).then(d => {
+    if (d.error) { res.innerHTML = '<div class="st st-err">' + d.error + '</div>'; return; }
+    const upToDate = d.latest === d.current;
+    res.innerHTML = '<div class="result">'
+      + '<div class="result-row"><span class="rlbl">Latest</span><span>v' + d.latest + '</span></div>'
+      + (d.notes ? '<div class="notes">' + d.notes + '</div>' : '')
+      + (upToDate
+        ? '<div class="ok">✓ Up to date</div>'
+        : '<button class="btn" style="margin-top:12px;width:100%;background:var(--a);color:var(--bg)" id="btnFwApply" onclick="applyRemote(\'' + d.url.replace(/\\/g,'\\\\').replace(/'/g,"\\'") + '\')">Install v' + d.latest + '</button>'
+          + '<div class="st st-n" id="fwApplySt" style="margin-top:8px"></div>')
+      + '</div>';
+  }).catch(e => {
+    res.innerHTML = '<div class="st st-err">' + e.message + '</div>';
+  }).finally(() => {
+    btn.disabled = false; btn.textContent = 'Check for Updates';
   });
 }
 
-function applyRemote(url){
-  var applyBtn=document.getElementById('btn-apply'),st=document.getElementById('apply-st');
-  if(applyBtn) applyBtn.disabled=true;
-  if(st) st.textContent='Starting download… Board will reboot shortly.';
-  fetch('/update/fetch',{method:'POST',headers:{'Content-Type':'text/plain'},body:url})
-    .then(r=>r.json()).then(function(d){
-      if(st) st.textContent=d.ok?'Downloading and flashing… Board will reboot.':'Error: '+(d.error||'unknown');
-    }).catch(function(e){ if(st) st.textContent='Error: '+e.message; });
+function applyRemote(url) {
+  const applyBtn = document.getElementById('btnFwApply'), st = document.getElementById('fwApplySt');
+  if (applyBtn) applyBtn.disabled = true;
+  if (st) st.textContent = 'Starting download… Board will reboot shortly.';
+  fetch('/update/fetch', {method:'POST', headers:{'Content-Type':'text/plain'}, body: url})
+    .then(r => r.json()).then(d => {
+      if (st) st.textContent = d.ok ? 'Downloading and flashing… Board will reboot.' : 'Error: ' + (d.error || 'unknown');
+    }).catch(e => { if (st) st.textContent = 'Error: ' + e.message; });
 }
 
-function go(){
-  var f=document.getElementById('f').files[0];
-  if(!f){alert('Select a .bin file');return;}
-  var btn=document.getElementById('btn-up'),prog=document.getElementById('prog'),
-      bar=document.getElementById('bar'),st=document.getElementById('st');
-  btn.disabled=true; prog.style.display='block';
-  var x=new XMLHttpRequest();
-  x.upload.onprogress=function(e){
-    if(e.lengthComputable){var p=Math.round(e.loaded/e.total*100);
-      bar.style.width=p+'%'; st.textContent='Uploading... '+p+'%';}
+function uploadFirmware() {
+  const f = document.getElementById('fwFile').files[0];
+  if (!f) { alert('Select a .bin file'); return; }
+  const btn = document.getElementById('btnFwUpload'), prog = document.getElementById('fwProg'),
+        bar = document.getElementById('fwBar'), st = document.getElementById('fwSt');
+  btn.disabled = true; prog.style.display = 'block';
+  const x = new XMLHttpRequest();
+  x.upload.onprogress = e => {
+    if (e.lengthComputable) { const p = Math.round(e.loaded / e.total * 100);
+      bar.style.width = p + '%'; st.textContent = 'Uploading… ' + p + '%'; }
   };
-  x.onload=function(){
-    if(x.status===200&&x.responseText==='OK'){
-      bar.style.width='100%'; st.textContent='Done! Rebooting…';}
-    else{st.textContent='Error: '+x.responseText; btn.disabled=false;}
+  x.onload = () => {
+    if (x.status === 200 && x.responseText === 'OK') {
+      bar.style.width = '100%'; st.textContent = 'Done! Rebooting…';
+    } else { st.textContent = 'Error: ' + x.responseText; btn.disabled = false; }
   };
-  x.onerror=function(){st.textContent='Upload failed'; btn.disabled=false;};
-  var d=new FormData(); d.append('firmware',f);
-  x.open('POST','/update'); x.send(d);
+  x.onerror = () => { st.textContent = 'Upload failed'; btn.disabled = false; };
+  const d = new FormData(); d.append('firmware', f);
+  x.open('POST', '/update'); x.send(d);
 }
-</script>
-</body>
-</html>
-)rawhtml";
 
-static const char OVERLAY_HTML[] PROGMEM = R"rawhtml(
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Overlay Export</title>
-<style>
-:root{--bg:#1c1830;--card:#251f40;--elem:#3a3460;--border:#4a4478;--accent:#8070a8;--a:#f5c518;--b:#e83e8c;--a-rgb:245,197,24;--b-rgb:232,62,140}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:#fff;min-height:100vh;padding:16px 16px 40px}
-.card{background:var(--card);border-radius:16px;padding:16px;margin-bottom:12px}
-.lbl{font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:8px;display:block}
-.inp{width:100%;background:var(--elem);border:1px solid var(--border);border-radius:8px;color:#fff;padding:10px 12px;font-size:.9rem;outline:none;margin-bottom:8px}
-.inp:focus{border-color:var(--a)}
-select.inp{-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238070a8' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
-select.inp option{background:var(--elem)}
-.two{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
-.two .inp{margin-bottom:0}
-.btn{width:100%;border:none;border-radius:10px;padding:14px;font-size:.9rem;font-weight:600;cursor:pointer;margin-bottom:8px;-webkit-tap-highlight-color:transparent;user-select:none;touch-action:manipulation}
-.btn-y{background:var(--a);color:var(--bg)}
-.btn-d{background:var(--elem);color:var(--accent)}
-.btn-r{background:rgba(232,62,140,.12);color:var(--b);border:1px solid rgba(232,62,140,.3)}
-.btn:disabled{opacity:.35;cursor:default}
-.two-btn{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
-.two-btn .btn{margin:0}
-.hdr{display:flex;align-items:center;margin-bottom:16px}
-.back{background:none;border:none;color:var(--accent);cursor:pointer;font-size:.85rem;font-weight:600;display:flex;align-items:center;gap:4px;padding:4px 0;-webkit-tap-highlight-color:transparent}
-.ttl{font-size:.75rem;letter-spacing:3px;text-transform:uppercase;color:var(--accent);font-weight:600;flex:1;text-align:center}
-.gw{background:#2a2d31;border-radius:8px;padding:0;margin-bottom:10px;line-height:0}
-canvas{display:block;width:100%}
-video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8px}
-.st{font-size:.78rem;line-height:1.5;padding:10px 12px;border-radius:8px;margin-bottom:8px}
-.st-n{background:var(--elem);color:var(--accent)}
-.st-ok{background:rgba(110,231,183,.08);color:#6ee7b7;border:1px solid rgba(110,231,183,.2)}
-.st-err{background:rgba(232,62,140,.08);color:var(--b);border:1px solid rgba(232,62,140,.2)}
-.dl{display:none;text-align:center;padding:14px;background:rgba(245,197,24,.1);color:var(--a);border:1px solid rgba(245,197,24,.3);border-radius:10px;font-size:.9rem;font-weight:600;text-decoration:none;margin-bottom:8px}
-.dl.show{display:block}
-.hint{font-size:.78rem;color:var(--accent);line-height:1.5;margin-bottom:10px}
-</style>
-</head>
-<body>
-<div class="hdr">
-  <button class="back" onclick="location.href='/'">&#8592; Back</button>
-  <span class="ttl">Overlay Export</span>
-  <div style="width:60px"></div>
-</div>
+setInterval(refresh, 2000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+refresh();
 
-<div class="card">
-  <span class="lbl">Match Info</span>
-  <input class="inp" id="tournament" placeholder="Tournament (e.g. TSN #3)" oninput="redraw()">
-  <input class="inp" id="location"   placeholder="Location (e.g. Mulhouse)"  oninput="redraw()">
-  <div class="two">
-    <input class="inp" id="tA" placeholder="Team A" oninput="redraw()">
-    <input class="inp" id="tB" placeholder="Team B" oninput="redraw()">
-  </div>
-  <select class="inp" id="rnd" onchange="redraw()">
-    <option>Pool Play</option>
-    <option>RO32</option>
-    <option>RO16</option>
-    <option>RO8</option>
-    <option>Quarterfinals</option>
-    <option>Semifinals</option>
-    <option>Finals</option>
-  </select>
-</div>
-
-<div class="card">
-  <span class="lbl">Preview</span>
-  <div class="gw"><canvas id="cv" width="500" height="180" style="width:100%;display:block"></canvas></div>
-  <div id="logSt" class="st st-n">Loading score log&#8230;</div>
-  <button class="btn btn-d" onclick="exportPNG()">&#8595; Download PNG Snapshot</button>
-</div>
-
-<div class="card">
-  <span class="lbl">Export Overlay Video</span>
-  <p class="hint">In your game video, measure the time from when the game started (score 0&#8211;0 visible) to when the first point was scored. Enter it below.</p>
-  <span class="lbl" style="margin-top:4px">Time from game start to first point</span>
-  <div class="two" style="margin-bottom:8px">
-    <div style="position:relative">
-      <input type="number" class="inp" id="syncMm" min="0" max="99" value="0" style="margin:0;text-align:center" oninput="updateDurInfo()">
-      <span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:.7rem;color:var(--accent);pointer-events:none">min</span>
-    </div>
-    <div style="position:relative">
-      <input type="number" class="inp" id="syncSs" min="0" max="59" value="0" style="margin:0;text-align:center" oninput="updateDurInfo()">
-      <span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:.7rem;color:var(--accent);pointer-events:none">sec</span>
-    </div>
-  </div>
-  <div id="durInfo" class="st st-n" style="display:none"></div>
-  <button class="btn btn-y" id="bRec" onclick="startRec()" disabled>Export Overlay Video</button>
-  <button class="btn btn-r" id="bStop" onclick="stopRec()" style="display:none">&#9632; Cancel Export</button>
-  <div id="pbar" style="display:none;height:6px;background:var(--elem);border-radius:3px;margin-bottom:8px;overflow:hidden">
-    <div id="pfill" style="height:100%;background:var(--a);width:0;transition:width .4s;border-radius:3px"></div>
-  </div>
-  <div id="recSt" class="st st-n" style="display:none"></div>
-  <button class="btn btn-y" id="bSave" onclick="saveVideo()" style="display:none">&#8681; Save Overlay to Phone</button>
-  <p class="hint" style="margin-top:8px;margin-bottom:0">In CapCut: add your game video, then add the overlay as a <b style="color:#fff">Picture in Picture</b> layer. Select the overlay clip &rarr; <b style="color:#fff">Effects &rarr; Chroma Key</b>, tap the green area, and it disappears. Position the card wherever you want on the frame. Align its start with the moment the game starts &#8212; scores appear automatically at the right time.</p>
-</div>
-
-<script>
+// ── Video Overlay Export (pageOverlay) ──────────────────────────────────────
 var CV=document.getElementById('cv'),CTX=CV.getContext('2d');
 var log=[],mr=null,chunks=[],raf=null,wl=null,cardW=0,savedBlob=null,savedMime='',prefMime='';
 var SCALE=3; // render canvas at 3× for crisp video export
@@ -1385,18 +1324,6 @@ function drawOverlay(st){
 }
 
 function redraw(){drawOverlay(log.length?log[log.length-1]:null);}
-
-function exportPNG(){
-  var tmp=document.createElement('canvas');
-  tmp.width=CV.width;tmp.height=CV.height;
-  tmp.getContext('2d').drawImage(CV,0,0);
-  tmp.toBlob(function(b){
-    var a=document.createElement('a');
-    a.href=URL.createObjectURL(b);
-    a.download='overlay.png';
-    a.click();
-  },'image/png');
-}
 
 // ── Export ───────────────────────────────────────────────────
 function getSyncMs(){
@@ -1787,11 +1714,6 @@ inline void init() {
     server->send_P(200, "text/html", HTML);
   });
 
-  // Video overlay export page
-  server->on("/overlay", HTTP_GET, []() {
-    server->send_P(200, "text/html", OVERLAY_HTML);
-  });
-
   // Score event log (JSON array of timestamped states)
   server->on("/score-log", HTTP_GET, []() {
     server->send(200, "application/json", ScoreLogger::toJson());
@@ -2082,9 +2004,6 @@ inline void init() {
   });
 
   // OTA firmware update
-  server->on("/update", HTTP_GET, []() {
-    server->send_P(200, "text/html", OTA_HTML);
-  });
   server->on("/update", HTTP_POST,
     []() {
       bool ok = !Update.hasError();
