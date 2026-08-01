@@ -10,6 +10,7 @@
 #include <Preferences.h>
 #include "config.h"
 #include "score.h"
+#include "team_names.h"
 
 namespace Firebase {
 
@@ -355,6 +356,123 @@ inline bool writeWinPoints(uint8_t winPoints) {
   if (code < 0) { _resetClient(); return false; }
   Serial.printf("[Firebase] writeWinPoints OK: %d (code %d)\n", winPoints, code);
   return code == 200;
+}
+
+// ── Write team/player names ──────────────────────────────────────────────────
+// PATCHes only match-<channel>/meta/team_a (or team_b), and only the
+// name/player_1/player_2 leaves that are actually non-empty — meta also has
+// other writers (roundnet-worlds-live's editor UI and Fwango bridge) and this
+// must never overwrite color/country/phase/court/status, nor clobber a name
+// set elsewhere with a blank one just because this board hasn't been given
+// one yet.
+
+inline bool _writeTeamSide(const String& channel, const char* side,
+                            const char* name, const char* p1, const char* p2) {
+  JsonDocument doc;
+  bool any = false;
+  if (name[0]) { doc["name"]     = name; any = true; }
+  if (p1[0])   { doc["player_1"] = p1;   any = true; }
+  if (p2[0])   { doc["player_2"] = p2;   any = true; }
+  if (!any) return true; // nothing to push for this side — not an error
+
+  String payload;
+  serializeJson(doc, payload);
+
+  HTTPClient http;
+  http.setTimeout(5000);
+  http.setReuse(false);
+  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/meta/" + side + ".json";
+  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
+  http.addHeader("Content-Type", "application/json");
+  int code = http.PATCH(payload);
+  http.end();
+
+  if (code < 0) {
+    Serial.printf("[Firebase] writeTeamNames(%s) network error: %d\n", side, code);
+    _resetClient();
+    return false;
+  }
+  if (code != 200) {
+    Serial.printf("[Firebase] writeTeamNames(%s) FAILED, HTTP %d\n", side, code);
+    return false;
+  }
+  Serial.printf("[Firebase] writeTeamNames(%s) OK\n", side);
+  return true;
+}
+
+inline bool writeTeamNames(const TeamNames::Names& n) {
+  String channel = getChannel();
+  if (channel.isEmpty()) return false;
+  if (!WiFi.isConnected()) return false;
+  IPAddress localIP = WiFi.localIP();
+  if (localIP[0] == 0) return false;
+
+  bool okA = _writeTeamSide(channel, "team_a", n.teamA, n.playerA1, n.playerA2);
+  bool okB = _writeTeamSide(channel, "team_b", n.teamB, n.playerB1, n.playerB2);
+  return okA && okB;
+}
+
+// ── Read team/player names ───────────────────────────────────────────────────
+// Reads match-<channel>/teams_info (an official feed some tournaments already
+// populate — not written by any code in this repo) and match-<channel>/meta
+// (this project's own, editor-mode-writable fallback), and fills `out` with
+// team_a/team_b's name/player_1/player_2 — preferring teams_info when a field
+// is present there, exactly like roundnet-worlds-live's index.html already
+// resolves display names (see deriveMatch()'s teamView()). Without this
+// precedence, a channel with real tournament data in teams_info but nothing
+// in meta (e.g. channel 6/7) would look empty to the board even though the
+// live hub already shows names for it.
+
+inline bool _fetchJson(const String& channel, const char* path, JsonDocument& doc) {
+  HTTPClient http;
+  http.setTimeout(8000);
+  http.setReuse(false);
+  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/" + path + ".json";
+  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
+  int code = http.GET();
+  if (code != 200) {
+    http.end();
+    if (code < 0) _resetClient();
+    return false;
+  }
+  String payload = http.getString();
+  http.end();
+  return deserializeJson(doc, payload) == DeserializationError::Ok;
+}
+
+inline String _pickTeamField(bool haveOfficial, JsonDocument& official,
+                              bool haveMeta, JsonDocument& meta,
+                              const char* side, const char* key) {
+  if (haveOfficial) {
+    const char* v = official[side][key] | (const char*)nullptr;
+    if (v && v[0]) return String(v);
+  }
+  if (haveMeta) {
+    const char* v = meta[side][key] | (const char*)nullptr;
+    if (v && v[0]) return String(v);
+  }
+  return String("");
+}
+
+inline bool readTeamNames(TeamNames::Names& out) {
+  String channel = getChannel();
+  if (channel.isEmpty()) return false;
+  if (!WiFi.isConnected()) return false;
+  IPAddress localIP = WiFi.localIP();
+  if (localIP[0] == 0) return false;
+
+  JsonDocument official, meta;
+  bool haveOfficial = _fetchJson(channel, "teams_info", official);
+  bool haveMeta     = _fetchJson(channel, "meta", meta);
+  if (!haveOfficial && !haveMeta) return false;
+
+  strlcpy(out.teamA,    _pickTeamField(haveOfficial, official, haveMeta, meta, "team_a", "name").c_str(),     sizeof(out.teamA));
+  strlcpy(out.playerA1, _pickTeamField(haveOfficial, official, haveMeta, meta, "team_a", "player_1").c_str(), sizeof(out.playerA1));
+  strlcpy(out.playerA2, _pickTeamField(haveOfficial, official, haveMeta, meta, "team_a", "player_2").c_str(), sizeof(out.playerA2));
+  strlcpy(out.teamB,    _pickTeamField(haveOfficial, official, haveMeta, meta, "team_b", "name").c_str(),     sizeof(out.teamB));
+  strlcpy(out.playerB1, _pickTeamField(haveOfficial, official, haveMeta, meta, "team_b", "player_1").c_str(), sizeof(out.playerB1));
+  strlcpy(out.playerB2, _pickTeamField(haveOfficial, official, haveMeta, meta, "team_b", "player_2").c_str(), sizeof(out.playerB2));
+  return true;
 }
 
 } // namespace Firebase

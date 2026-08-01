@@ -25,6 +25,7 @@
 #include "score_actions.h"
 #include "wifi_mgr.h"
 #include "config.h"
+#include "team_names.h"
 
 extern Score currentScore;
 extern SemaphoreHandle_t scoreMutex;
@@ -152,6 +153,14 @@ inline void pushState() {
   doc["boardId"] = WiFiMgr::getScoreboardId();
   doc["version"] = FIRMWARE_VERSION;
   doc["pedals"].to<JsonArray>();
+
+  const TeamNames::Names& names = TeamNames::get();
+  doc["teamA"]    = names.teamA;
+  doc["teamB"]    = names.teamB;
+  doc["playerA1"] = names.playerA1;
+  doc["playerA2"] = names.playerA2;
+  doc["playerB1"] = names.playerB1;
+  doc["playerB2"] = names.playerB2;
 
   String json;
   serializeJson(doc, json);

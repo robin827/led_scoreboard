@@ -6,6 +6,7 @@
 #include "config.h"
 #include "mode.h"
 #include "score.h"
+#include "team_names.h"
 #include "led.h"
 #include "wifi_mgr.h"
 #include "firebase.h"
@@ -29,6 +30,7 @@ void firebaseTask(void*) {
   uint8_t lastWrittenWP = 255;  // force first write of winPoints
   uint8_t lastWrittenHC = 255;  // force first write of hardcap
   uint8_t lastWrittenFS = 255;
+  TeamNames::Names lastWrittenNames = {};
 
   for (;;) {
     WiFiMgr::tick();
@@ -54,6 +56,16 @@ void firebaseTask(void*) {
       }
       if (local.firstServer != lastWrittenFS) {
         if (Firebase::writeFirstServer(local)) lastWrittenFS = local.firstServer;
+      }
+
+      TeamNames::Names names = TeamNames::get();
+      if (strcmp(names.teamA, lastWrittenNames.teamA)       != 0 ||
+          strcmp(names.teamB, lastWrittenNames.teamB)       != 0 ||
+          strcmp(names.playerA1, lastWrittenNames.playerA1) != 0 ||
+          strcmp(names.playerA2, lastWrittenNames.playerA2) != 0 ||
+          strcmp(names.playerB1, lastWrittenNames.playerB1) != 0 ||
+          strcmp(names.playerB2, lastWrittenNames.playerB2) != 0) {
+        if (Firebase::writeTeamNames(names)) lastWrittenNames = names;
       }
 
       // Too many errors: pause 30s
@@ -103,6 +115,26 @@ void firebaseTask(void*) {
           consecutiveErrors++;
           Serial.printf("[Firebase] Error %d/%d\n", consecutiveErrors, MAX_ERRORS);
         }
+
+        // Names, too: pick up anything set through another tool (worlds-live
+        // editor UI, Fwango bridge) or another board flow. Compared against
+        // lastWrittenNames (what we believe Firebase currently holds), not
+        // TeamNames::get() directly, so reading back exactly what we just
+        // wrote doesn't bounce back down and overwrite in-progress local edits.
+        TeamNames::Names dbNames;
+        if (Firebase::readTeamNames(dbNames)) {
+          if (strcmp(dbNames.teamA, lastWrittenNames.teamA)       != 0 ||
+              strcmp(dbNames.teamB, lastWrittenNames.teamB)       != 0 ||
+              strcmp(dbNames.playerA1, lastWrittenNames.playerA1) != 0 ||
+              strcmp(dbNames.playerA2, lastWrittenNames.playerA2) != 0 ||
+              strcmp(dbNames.playerB1, lastWrittenNames.playerB1) != 0 ||
+              strcmp(dbNames.playerB2, lastWrittenNames.playerB2) != 0) {
+            TeamNames::set(dbNames.teamA, dbNames.teamB,
+                            dbNames.playerA1, dbNames.playerA2,
+                            dbNames.playerB1, dbNames.playerB2);
+            lastWrittenNames = dbNames;
+          }
+        }
       }
     } else {
       consecutiveErrors = 0;
@@ -131,6 +163,7 @@ void setup() {
   Serial.println("[1/4] Init Mode...");
   Mode::init();
   ScoreActions::initBatterySaver();
+  TeamNames::init();
 
   // 2. WiFi (AP always on; STA skipped in Local mode)
   Serial.println("[2/4] Init WiFi...");
@@ -228,6 +261,44 @@ void loop() {
     xSemaphoreGive(scoreMutex);
   }
   prevTimerActive = timerActive;
+
+  static bool     prevIntroActive     = false;
+  static uint32_t lastIntroUpdate     = 0;
+  static uint8_t  lastFirstServer     = 0;
+  static uint32_t introResumeAt       = 0;
+  static constexpr uint32_t INTRO_RESUME_DELAY_MS = 4000; // let the serve-change be seen before resuming
+
+  xSemaphoreTake(scoreMutex, portMAX_DELAY);
+  bool matchNotStarted = (currentScore.scoreA + currentScore.scoreB +
+                           currentScore.setA   + currentScore.setB) == 0;
+  uint8_t curFirstServer = currentScore.firstServer;
+  xSemaphoreGive(scoreMutex);
+
+  // Whenever "first server" changes (portal tap, pedal a/long|b/long, or a
+  // central "set_serving" command) while pre-match, hold off the marquee for
+  // a few seconds so the operator can actually see the serve indicator change.
+  if (curFirstServer != lastFirstServer) {
+    lastFirstServer = curFirstServer;
+    introResumeAt    = millis() + INTRO_RESUME_DELAY_MS;
+  }
+
+  bool introActive = !timeoutActive && !timerActive && TeamNames::hasAnyTeamName() &&
+                      matchNotStarted && (int32_t)(millis() - introResumeAt) >= 0;
+
+  if (introActive) {
+    uint32_t now = millis();
+    if (now - lastIntroUpdate >= 33) {
+      lastIntroUpdate = now;
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      LED::showTeamIntro(TeamNames::get());
+      xSemaphoreGive(scoreMutex);
+    }
+  } else if (prevIntroActive) {
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    LED::update(currentScore);
+    xSemaphoreGive(scoreMutex);
+  }
+  prevIntroActive = introActive;
 
   static uint32_t lastLog = 0;
   if (millis() - lastLog > 10000) {

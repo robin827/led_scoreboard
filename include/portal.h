@@ -15,6 +15,7 @@
 #include "ws_client.h"
 #include "mode.h"
 #include "firebase.h"
+#include "team_names.h"
 #include <Update.h>
 
 // Defined in main.cpp — forward declarations so the /mode route can manage the Firebase task
@@ -60,6 +61,18 @@ static void _handleOverlayUpload() {
 }
 static uint32_t   _offlineGraceStart = 0;
 static constexpr uint32_t OFFLINE_GRACE_MS = 5000;
+
+// Minimal JSON string escaping (", \) for free-typed fields (team/player
+// names) embedded into /status's hand-built JSON string — unlike the other
+// concatenated fields there, these come straight from user input.
+static String _jsonEscape(const char* s) {
+  String out;
+  for (const char* p = s; *p; p++) {
+    if (*p == '"' || *p == '\\') out += '\\';
+    out += *p;
+  }
+  return out;
+}
 
 // HTML moderne avec mode selector + channel + WiFi scan
 static const char HTML[] PROGMEM = R"rawhtml(
@@ -209,8 +222,8 @@ select.input option{background:var(--elem)}
 .srv-corner-b{color:var(--b);border-color:rgba(var(--b-rgb),.3)}
 .srv-corner.active-a{opacity:1;background:rgba(var(--a-rgb),.18)}
 .srv-corner.active-b{opacity:1;background:rgba(var(--b-rgb),.18)}
-.team-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:10px}
-.team-name{font-size:0.65rem;letter-spacing:2px;text-transform:uppercase;color:var(--accent)}
+.team-row{display:flex;flex-direction:column;align-items:center;gap:6px;margin-bottom:10px}
+.team-name{font-size:0.65rem;letter-spacing:2px;text-transform:uppercase;color:var(--accent);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wifi-toggle{position:relative;display:inline-flex;align-items:center;width:68px;height:28px;border-radius:14px;background:rgba(255,255,255,0.12);cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;transition:background .22s;flex-shrink:0}
 .wifi-toggle[data-enabled="1"]{background:var(--accent)}
 .wt-knob{position:absolute;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 5px rgba(0,0,0,.4);transition:left .22s;pointer-events:none;z-index:1}
@@ -282,8 +295,8 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
       <div id="scoreView" style="display:contents">
         <div class="team">
           <div class="team-row">
-            <div class="srv-corner srv-corner-a active-a" id="srvCornerA" onclick="setFirstServer(0)">1st</div>
             <span class="team-name" id="lblA">Team A</span>
+            <div class="srv-corner srv-corner-a active-a" id="srvCornerA" onclick="setFirstServer(0)">1st Serve</div>
           </div>
           <div class="score-wrap">
             <div class="serve-col serve-col-a" id="serveA"></div>
@@ -294,7 +307,7 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
         <div class="team">
           <div class="team-row">
             <span class="team-name" id="lblB">Team B</span>
-            <div class="srv-corner srv-corner-b" id="srvCornerB" onclick="setFirstServer(1)">1st</div>
+            <div class="srv-corner srv-corner-b" id="srvCornerB" onclick="setFirstServer(1)">1st Serve</div>
           </div>
           <div class="score-wrap">
             <div class="score score-b" id="scoreB">00</div>
@@ -327,6 +340,27 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
   <div class="settings" style="margin-top:12px">
     <div class="setting-group" style="margin:0">
       <button class="btn" style="width:100%" onclick="action('/timeout',this)">Timeout</button>
+    </div>
+  </div>
+
+  <div class="settings" style="margin-top:12px">
+    <div class="setting-group" style="margin-bottom:14px">
+      <label class="setting-label">Team A</label>
+      <input type="text" class="input" id="teamA" maxlength="24" placeholder="Team A name" oninput="_teamsDirty=true" style="margin-bottom:8px">
+      <div style="display:flex;gap:8px">
+        <input type="text" class="input" id="playerA1" maxlength="24" placeholder="Player 1" oninput="_teamsDirty=true">
+        <input type="text" class="input" id="playerA2" maxlength="24" placeholder="Player 2" oninput="_teamsDirty=true">
+      </div>
+    </div>
+    <div class="setting-group" style="margin-bottom:0">
+      <label class="setting-label">Team B</label>
+      <input type="text" class="input" id="teamB" maxlength="24" placeholder="Team B name" oninput="_teamsDirty=true" style="margin-bottom:8px">
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <input type="text" class="input" id="playerB1" maxlength="24" placeholder="Player 1" oninput="_teamsDirty=true">
+        <input type="text" class="input" id="playerB2" maxlength="24" placeholder="Player 2" oninput="_teamsDirty=true">
+      </div>
+      <button class="btn" style="width:100%;background:var(--a);color:var(--bg)" onclick="saveTeams()">Save Names</button>
+      <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">Team names scroll across the LED panel before the match starts. Synced to the central server / Firebase when online.</div>
     </div>
   </div>
 
@@ -739,6 +773,16 @@ async function refresh() {
     }
     if (d.sleeping !== undefined) { _sleeping = d.sleeping; _updateSleepButtons(); }
     if (d.serverIp !== undefined && !_serverIpDirty) document.getElementById('serverIp').value = d.serverIp;
+    if (d.teamA !== undefined) document.getElementById('lblA').textContent = d.teamA || 'Team A';
+    if (d.teamB !== undefined) document.getElementById('lblB').textContent = d.teamB || 'Team B';
+    if (d.teamA !== undefined && !_teamsDirty) {
+      document.getElementById('teamA').value    = d.teamA;
+      document.getElementById('teamB').value    = d.teamB;
+      document.getElementById('playerA1').value = d.playerA1;
+      document.getElementById('playerA2').value = d.playerA2;
+      document.getElementById('playerB1').value = d.playerB1;
+      document.getElementById('playerB2').value = d.playerB2;
+    }
     if (d.wsConnected !== undefined) {
       const ws = document.getElementById('wsStatus');
       ws.className = 'status-badge ' + (d.wsConnected ? 'status-online' : 'status-offline');
@@ -999,6 +1043,7 @@ let _brightnessTimer = null;
 let _brightnessDirty = false;
 let _boardIdDirty = false;
 let _serverIpDirty = false;
+let _teamsDirty = false;
 async function saveBoardId() {
   const val = document.getElementById('boardId').value.trim();
   if (val.length === 0) return;
@@ -1021,6 +1066,21 @@ function setBrightness(val) {
 async function saveServerIp() {
   const val = document.getElementById('serverIp').value.trim();
   try { await fetch('/serverip', {method:'POST', body: val}); _serverIpDirty = false; } catch(e) {}
+}
+
+async function saveTeams() {
+  const body = {
+    teamA:    document.getElementById('teamA').value.trim(),
+    teamB:    document.getElementById('teamB').value.trim(),
+    playerA1: document.getElementById('playerA1').value.trim(),
+    playerA2: document.getElementById('playerA2').value.trim(),
+    playerB1: document.getElementById('playerB1').value.trim(),
+    playerB2: document.getElementById('playerB2').value.trim(),
+  };
+  try {
+    await fetch('/teams', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    _teamsDirty = false;
+  } catch(e) {}
 }
 
 const _MODE_HINTS = {
@@ -1781,6 +1841,15 @@ inline void init() {
     json += ",\"hardcap\":" + String(currentScore.hardcap);
     json += ",\"format\":" + String(currentScore.format);
     json += ",\"version\":\"" + String(FIRMWARE_VERSION) + "\"";
+    {
+      const TeamNames::Names& n = TeamNames::get();
+      json += ",\"teamA\":\""    + _jsonEscape(n.teamA)    + "\"";
+      json += ",\"teamB\":\""    + _jsonEscape(n.teamB)    + "\"";
+      json += ",\"playerA1\":\"" + _jsonEscape(n.playerA1) + "\"";
+      json += ",\"playerA2\":\"" + _jsonEscape(n.playerA2) + "\"";
+      json += ",\"playerB1\":\"" + _jsonEscape(n.playerB1) + "\"";
+      json += ",\"playerB2\":\"" + _jsonEscape(n.playerB2) + "\"";
+    }
     json += "}";
     server->send(200, "application/json", json);
   });
@@ -1951,6 +2020,25 @@ inline void init() {
     ip.trim();
     WsClient::saveServerIp(ip);
     WsClient::init(ip);
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/teams", HTTP_POST, []() {
+    if (!server->hasArg("plain")) { server->send(400, "text/plain", "Bad"); return; }
+    JsonDocument doc;
+    if (deserializeJson(doc, server->arg("plain")) != DeserializationError::Ok) {
+      server->send(400, "text/plain", "Bad JSON");
+      return;
+    }
+    TeamNames::set(
+      doc["teamA"]    | "",
+      doc["teamB"]    | "",
+      doc["playerA1"] | "",
+      doc["playerA2"] | "",
+      doc["playerB1"] | "",
+      doc["playerB2"] | ""
+    );
+    WsClient::requestPush();
     server->send(200, "text/plain", "OK");
   });
 
