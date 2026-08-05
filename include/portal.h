@@ -62,14 +62,26 @@ static void _handleOverlayUpload() {
 static uint32_t   _offlineGraceStart = 0;
 static constexpr uint32_t OFFLINE_GRACE_MS = 5000;
 
-// Minimal JSON string escaping (", \) for free-typed fields (team/player
-// names) embedded into /status's hand-built JSON string — unlike the other
-// concatenated fields there, these come straight from user input.
+// JSON string escaping for free-typed / externally-sourced fields embedded
+// into hand-built JSON strings (e.g. /status team/player names, /update/check
+// release notes from the GitHub API) — unlike the other concatenated fields,
+// these aren't known-safe literals and may contain quotes, backslashes, or
+// raw control characters (GitHub release bodies commonly embed literal '\n').
 static String _jsonEscape(const char* s) {
   String out;
   for (const char* p = s; *p; p++) {
-    if (*p == '"' || *p == '\\') out += '\\';
-    out += *p;
+    unsigned char c = (unsigned char)*p;
+    if (c == '"' || c == '\\') { out += '\\'; out += (char)c; }
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
+    else if (c < 0x20) {
+      char buf[7];
+      snprintf(buf, sizeof(buf), "\\u%04x", c);
+      out += buf;
+    } else {
+      out += (char)c;
+    }
   }
   return out;
 }
@@ -2153,10 +2165,10 @@ inline void init() {
     String notes  = String(doc["body"] | "");
     if (notes.length() > 200) notes = notes.substring(0, 200) + "...";
     String resp = "{";
-    resp += "\"current\":\"" + String(FIRMWARE_VERSION) + "\",";
-    resp += "\"latest\":\""  + latest + "\",";
-    resp += "\"url\":\""     + dlUrl  + "\",";
-    resp += "\"notes\":\""   + notes  + "\"";
+    resp += "\"current\":\"" + _jsonEscape(FIRMWARE_VERSION) + "\",";
+    resp += "\"latest\":\""  + _jsonEscape(latest.c_str())   + "\",";
+    resp += "\"url\":\""     + _jsonEscape(dlUrl.c_str())    + "\",";
+    resp += "\"notes\":\""   + _jsonEscape(notes.c_str())    + "\"";
     resp += "}";
     server->send(200, "application/json", resp);
   });
