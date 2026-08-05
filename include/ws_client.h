@@ -238,6 +238,12 @@ static void _handleCommand(const String& payload) {
     if (value >= 0 && value <= 2) currentScore.format = (uint8_t)value;
     xSemaphoreGive(scoreMutex);
     pushState();
+  } else if (strcmp(action, "set_team_names") == 0) {
+    ScoreActions::notifyActivity();
+    TeamNames::set(doc["teamA"]    | "", doc["teamB"]    | "",
+                    doc["playerA1"] | "", doc["playerA2"] | "",
+                    doc["playerB1"] | "", doc["playerB2"] | "");
+    pushState();
   } else if (strcmp(action, "sleep") == 0) {
     ScoreActions::activateSleep();
   } else if (strcmp(action, "ota_update") == 0) {
