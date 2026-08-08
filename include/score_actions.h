@@ -11,7 +11,6 @@ extern SemaphoreHandle_t scoreMutex;
 namespace ScoreActions {
 
 static volatile uint32_t _rotationCount   = 0;
-static volatile bool     _rotationPending  = false;
 static volatile bool     _timerActive      = false;
 static volatile uint32_t _timerStartMs     = 0;
 static volatile bool     _timeoutActive    = false;
@@ -77,8 +76,7 @@ inline void tickBatterySaver() {
   }
 }
 
-inline void     triggerRotation()     { _rotationCount++; _rotationPending = true; }
-inline bool     getAndClearRotation() { bool r = _rotationPending; _rotationPending = false; return r; }
+inline void     triggerRotation()     { _rotationCount++; }
 inline uint32_t getRotationCount()    { return _rotationCount; }
 inline void     startBreakTimer()     { _timerActive = true; _timerStartMs = millis(); }
 
@@ -178,7 +176,6 @@ inline bool apply(const char* cmd) {
   if (didIncrement) {
     if ((currentScore.scoreA + currentScore.scoreB) % 4 == 3) {
       _rotationCount++;
-      _rotationPending = true;
     }
   }
   if (didNextSet) {

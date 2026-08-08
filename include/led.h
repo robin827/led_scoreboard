@@ -359,66 +359,6 @@ inline void tick() {
   FastLED.show();
 }
 
-// 4 players (2 per team) rotating CCW by 90° over 2 seconds, 3 reps
-inline void rotationAnimation() {
-  const int   cols = (int)Config::NUM_COLS;
-  const int   rows = (int)(Config::NUM_ROWS + 4);
-  const float cx   = (cols - 1) * 0.5f;
-  const float cy   = (rows - 1) * 0.5f;
-  const float r    = 5.5f;
-  static constexpr float PI2 = 6.28318530f;
-
-  auto sp = [&](int x, int y, CRGB c) {
-    if (x < 0 || x >= cols || y < 0 || y >= rows) return;
-    _leds[xy(x, y)] = c;
-  };
-
-  const float startAngle[4] = { 0.0f, PI2*0.25f, PI2*0.5f, PI2*0.75f };
-  const CRGB  playerCol[4]  = { COLOR_A, COLOR_A, COLOR_B, COLOR_B };
-  const float netR      = 1.5f;
-  const int   NET_STEPS = 12;
-  const int   FRAMES    = 25;
-  const int   REPS      = 3;
-  const int   PAUSE_MS  = 120;
-  const int   TRAIL     = 4;
-  const float TRAIL_STEP = 0.12f;
-
-  auto drawNet = [&]() {
-    for (int i = 0; i < NET_STEPS; i++) {
-      float a = PI2 * i / NET_STEPS;
-      sp((int)roundf(cx + netR * cosf(a)), (int)roundf(cy - netR * sinf(a)), CRGB(200, 200, 200));
-    }
-  };
-
-  for (int rep = 0; rep < REPS; rep++) {
-    for (int f = 0; f < FRAMES; f++) {
-      FastLED.clear();
-      drawNet();
-      float rot = PI2 * 0.25f * f / (FRAMES - 1);
-      for (int p = 0; p < 4; p++) {
-        float head = startAngle[p] + rot;
-        for (int t = TRAIL; t >= 0; t--) {
-          float a  = head - t * TRAIL_STEP;
-          int   px = (int)roundf(cx + r * cosf(a));
-          int   py = (int)roundf(cy - r * sinf(a));
-          uint8_t bri = (t == 0) ? 230 : (uint8_t)(40u + 50u * (TRAIL - t) / TRAIL);
-          CRGB c = playerCol[p]; c.nscale8(bri);
-          sp(px, py, c);
-        }
-      }
-      FastLED.show();
-      delay(20);
-    }
-    if (rep < REPS - 1) {
-      FastLED.clear();
-      drawNet();
-      FastLED.show();
-      delay(PAUSE_MS);
-    }
-  }
-  update(_animScore);  // redraw; ring resumes automatically since score is still at the rotation point
-}
-
 // Sleep animation: 4 LEDs centred (cols 10-13, row 5), yellow→cyan travelling wave
 inline void showSleepAnimation() {
   FastLED.clear();

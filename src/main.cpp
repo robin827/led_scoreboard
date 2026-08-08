@@ -211,17 +211,6 @@ void loop() {
     return;
   }
 
-  static bool     _rotWaiting   = false;
-  static uint32_t _rotAnimStart = 0;
-  if (!_rotWaiting && ScoreActions::getAndClearRotation()) {
-    _rotWaiting   = true;
-    _rotAnimStart = millis();
-  }
-  if (_rotWaiting && (millis() - _rotAnimStart) >= 1500) {
-    _rotWaiting = false;
-    LED::rotationAnimation();
-  }
-
   static bool     prevTimeoutActive = false;
   static uint32_t lastTimeoutUpdate = 0;
   bool timeoutActive = ScoreActions::isTimeoutActive();
