@@ -263,10 +263,30 @@ void loop() {
   }
   prevTimeoutActive = timeoutActive;
 
+  static bool     prevMedicalActive = false;
+  static uint32_t lastMedicalUpdate = 0;
+  bool medicalActive = !timeoutActive && ScoreActions::isMedicalActive();
+
+  if (medicalActive) {
+    uint32_t remaining = ScoreActions::medicalCountdownMs();
+    uint32_t now       = millis();
+    if (remaining > 0 && now - lastMedicalUpdate >= 33) {
+      lastMedicalUpdate = now;
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      LED::showMedicalTimer(remaining);
+      xSemaphoreGive(scoreMutex);
+    }
+  } else if (prevMedicalActive && !timeoutActive) {
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    LED::update(currentScore);
+    xSemaphoreGive(scoreMutex);
+  }
+  prevMedicalActive = medicalActive;
+
   static bool     prevTimerActive = false;
   static uint32_t lastTimerUpdate = 0;
   uint32_t timerMs    = ScoreActions::breakTimerRemainingMs();
-  bool     timerActive = !timeoutActive && (timerMs > 0);
+  bool     timerActive = !timeoutActive && !medicalActive && (timerMs > 0);
 
   if (timerActive) {
     uint32_t now = millis();
@@ -276,7 +296,7 @@ void loop() {
       LED::showBreakTimer(timerMs, true);
       xSemaphoreGive(scoreMutex);
     }
-  } else if (prevTimerActive && !timeoutActive) {
+  } else if (prevTimerActive && !timeoutActive && !medicalActive) {
     xSemaphoreTake(scoreMutex, portMAX_DELAY);
     LED::update(currentScore);
     xSemaphoreGive(scoreMutex);
@@ -303,7 +323,7 @@ void loop() {
     introResumeAt    = millis() + INTRO_RESUME_DELAY_MS;
   }
 
-  bool introActive = !timeoutActive && !timerActive && TeamNames::hasAnyTeamName() &&
+  bool introActive = !timeoutActive && !medicalActive && !timerActive && TeamNames::hasAnyTeamName() &&
                       matchNotStarted && (int32_t)(millis() - introResumeAt) >= 0;
 
   if (introActive) {

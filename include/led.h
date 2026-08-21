@@ -399,7 +399,7 @@ inline void showBreakTimer(uint32_t remainingMs, bool colonOn) {
 // ─── Timeout display ─────────────────────────────────────────────────────────
 
 static const uint8_t _TG_T[5][3] = {{1,1,1},{0,1,0},{0,1,0},{0,1,0},{0,1,0}};
-static const uint8_t _TG_I[5][3] = {{0,1,0},{0,1,0},{0,1,0},{0,1,0},{0,1,0}};
+static const uint8_t _TG_I[5][3] = {{1,1,1},{0,1,0},{0,1,0},{0,1,0},{1,1,1}};
 static const uint8_t _TG_M[5][3] = {{1,0,1},{1,1,1},{1,0,1},{1,0,1},{1,0,1}};
 static const uint8_t _TG_E[5][3] = {{1,1,1},{1,0,0},{1,1,0},{1,0,0},{1,1,1}};
 static const uint8_t _TG_O[5][3] = {{1,1,1},{1,0,1},{1,0,1},{1,0,1},{1,1,1}};
@@ -427,6 +427,54 @@ inline void showTimeoutDisplay(uint32_t remainingMs) {
 
   const int COLS   = (int)Config::NUM_COLS;
   const int LOOP_W = TEXT_W + 5;  // 34
+  int scroll = (int)((millis() * 10UL / 1000UL) % (uint32_t)LOOP_W);
+  int xOff   = -scroll;
+  for (int k = 0; k <= 2; k++) {
+    int copyOff = xOff + k * LOOP_W;
+    if (copyOff >= COLS || copyOff + TEXT_W <= 0) continue;
+    for (int ci = 0; ci < 7; ci++) {
+      int charX = copyOff + CHAR_X[ci];
+      for (int gy = 0; gy < 5; gy++)
+        for (int gx = 0; gx < 3; gx++) {
+          if (!msg[ci][gy][gx]) continue;
+          int px = charX + gx;
+          int py = (int)Config::NUM_ROWS - 1 + gy;  // y = 7..11
+          if (px >= 0 && px < COLS) _leds[xy(px, py)] = textCol;
+        }
+    }
+  }
+  FastLED.show();
+}
+
+// ─── Medical timer display ────────────────────────────────────────────────────
+
+static const uint8_t _TG_D[5][3] = {{1,1,0},{1,0,1},{1,0,1},{1,0,1},{1,1,0}};
+static const uint8_t _TG_C[5][3] = {{0,1,1},{1,0,0},{1,0,0},{1,0,0},{0,1,1}};
+static const uint8_t _TG_A[5][3] = {{0,1,0},{1,0,1},{1,1,1},{1,0,1},{1,0,1}};
+static const uint8_t _TG_L[5][3] = {{1,0,0},{1,0,0},{1,0,0},{1,0,0},{1,1,1}};
+
+inline void showMedicalTimer(uint32_t remainingMs) {
+  _timerMode = true;
+  FastLED.clear();
+
+  CRGB timerCol = CRGB(0, 210, 80);
+  CRGB textCol  = CRGB(255, 80, 80);
+
+  uint32_t totalSec = (remainingMs + 999) / 1000;
+  int mins = (int)(totalSec / 60);
+  int secs = (int)(totalSec % 60);
+
+  const uint8_t (*msg[7])[3] = {_TG_M,_TG_E,_TG_D,_TG_I,_TG_C,_TG_A,_TG_L};
+  static const int8_t CHAR_X[7] = {0, 4, 8, 12, 16, 20, 24};
+  static constexpr int TEXT_W = 27;
+
+  drawDigit(mins,      3, 0, timerCol);
+  _leds[xy(9, 2)] = timerCol; _leds[xy(9, 5)] = timerCol;
+  drawDigit(secs / 10, 12, 0, timerCol);
+  drawDigit(secs % 10, 18, 0, timerCol);
+
+  const int COLS   = (int)Config::NUM_COLS;
+  const int LOOP_W = TEXT_W + 5;
   int scroll = (int)((millis() * 10UL / 1000UL) % (uint32_t)LOOP_W);
   int xOff   = -scroll;
   for (int k = 0; k <= 2; k++) {

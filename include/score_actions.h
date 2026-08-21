@@ -16,6 +16,8 @@ static volatile bool     _timerActive      = false;
 static volatile uint32_t _timerStartMs     = 0;
 static volatile bool     _timeoutActive    = false;
 static volatile uint32_t _timeoutStartMs   = 0;
+static volatile bool     _medicalActive    = false;
+static volatile uint32_t _medicalStartMs   = 0;
 
 // Battery saver
 static volatile uint32_t _lastActivityMs   = 0;
@@ -26,6 +28,7 @@ static uint8_t         _preSleepBrightness  = 100;
 
 static constexpr uint32_t BREAK_DURATION_MS    = 3UL * 60UL * 1000UL;
 static constexpr uint32_t TIMEOUT_COUNTDOWN_MS = 60UL * 1000UL;
+static constexpr uint32_t MEDICAL_DURATION_MS  = 5UL * 60UL * 1000UL;
 
 inline void initBatterySaver() {
   Preferences prefs;
@@ -98,12 +101,21 @@ inline uint32_t timeoutCountdownMs() {
   return TIMEOUT_COUNTDOWN_MS - elapsed;
 }
 
+inline bool isMedicalActive() { return _medicalActive; }
+inline uint32_t medicalCountdownMs() {
+  if (!_medicalActive) return 0;
+  uint32_t elapsed = millis() - _medicalStartMs;
+  if (elapsed >= MEDICAL_DURATION_MS) { _medicalActive = false; return 0; }
+  return MEDICAL_DURATION_MS - elapsed;
+}
+
 // Apply a score state received from Firebase — cancels break/timeout timers, updates display
 inline void applyFromDatabase(const Score& db) {
   notifyActivity();
   xSemaphoreTake(scoreMutex, portMAX_DELAY);
   _timerActive   = false;
   _timeoutActive = false;
+  _medicalActive = false;
   currentScore = db;
   LED::update(currentScore);
   xSemaphoreGive(scoreMutex);
@@ -113,13 +125,45 @@ inline bool apply(const char* cmd) {
   notifyActivity();
   xSemaphoreTake(scoreMutex, portMAX_DELAY);
 
-  // Timeout command always wins: cancel break timer and start 60 s countdown
+  // Timer commands (timeout/break/medical) are mutually exclusive — starting
+  // one always cancels whichever of the other two was running.
   if (strcmp(cmd, "timeout") == 0) {
     _timerActive    = false;
+    _medicalActive  = false;
     _timeoutActive  = true;
     _timeoutStartMs = millis();
     xSemaphoreGive(scoreMutex);
     return true;
+  }
+  if (strcmp(cmd, "break") == 0) {
+    _timeoutActive  = false;
+    _medicalActive  = false;
+    _timerActive    = true;
+    _timerStartMs   = millis();
+    xSemaphoreGive(scoreMutex);
+    return true;
+  }
+  if (strcmp(cmd, "medical") == 0) {
+    _timerActive    = false;
+    _timeoutActive  = false;
+    _medicalActive  = true;
+    _medicalStartMs = millis();
+    xSemaphoreGive(scoreMutex);
+    return true;
+  }
+
+  // Cancel-only: stops whichever of break/timeout/medical is running, with no
+  // score side effect. Lets an external source (ObserverTool cancelling its
+  // own synced countdown early over ESP-NOW, or a future portal button) stop
+  // a timer the same way a known game command already does as a side effect.
+  if (strcmp(cmd, "stoptimer") == 0) {
+    bool wasActive = _timerActive || _timeoutActive || _medicalActive;
+    _timerActive    = false;
+    _timeoutActive  = false;
+    _medicalActive  = false;
+    if (wasActive) LED::update(currentScore);
+    xSemaphoreGive(scoreMutex);
+    return wasActive;
   }
 
   // Only known game commands cancel active timers — unknown strings are silently ignored
@@ -146,6 +190,16 @@ inline bool apply(const char* cmd) {
   // Known game command cancels timeout without scoring (reset is exempt — it executes regardless)
   if (_timeoutActive) {
     _timeoutActive = false;
+    if (strcmp(cmd, "reset") != 0) {
+      LED::update(currentScore);
+      xSemaphoreGive(scoreMutex);
+      return true;
+    }
+  }
+
+  // Known game command cancels medical timer without scoring (reset is exempt — it executes regardless)
+  if (_medicalActive) {
+    _medicalActive = false;
     if (strcmp(cmd, "reset") != 0) {
       LED::update(currentScore);
       xSemaphoreGive(scoreMutex);

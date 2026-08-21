@@ -373,7 +373,7 @@ inline void tick() {
     uint8_t bright = LED::getBrightness();
 
     unsigned long now = millis();
-    bool anyTimer = ScoreActions::isTimeoutActive() || ScoreActions::isBreakTimerActive();
+    bool anyTimer = ScoreActions::isTimeoutActive() || ScoreActions::isBreakTimerActive() || ScoreActions::isMedicalActive();
     unsigned long interval = anyTimer ? 1000UL : HEARTBEAT_MS;
     if (_needsPush                                    ||
         now - _lastPush     >= interval               ||

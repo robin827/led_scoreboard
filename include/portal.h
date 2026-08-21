@@ -109,7 +109,7 @@ body.top-align{align-items:flex-start}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.15}}
 .pulse.live{animation:blink .5s 1;background:var(--a)}
 .scoreboard{background:var(--card);border-radius:20px;padding:28px 20px 20px;margin-bottom:16px;box-shadow:0 8px 40px rgba(0,0,0,0.4);position:relative}
-.scores{display:flex;justify-content:space-around;align-items:center;margin-bottom:16px;position:relative}
+.scores{display:flex;justify-content:space-around;align-items:center;margin-bottom:2px;position:relative}
 .team{text-align:center}
 .team-label{font-size:0.65rem;letter-spacing:2px;text-transform:uppercase;color:var(--accent);margin-bottom:10px;cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none;position:relative}
 .team-label:active{opacity:0.6}
@@ -218,9 +218,15 @@ select.input option{background:var(--elem)}
 .app-header{text-align:center;margin-bottom:24px}
 .page-subtitle{display:flex;align-items:center;justify-content:center;gap:6px;font-size:0.68rem;letter-spacing:2px;text-transform:uppercase;color:var(--accent);font-weight:600;margin-top:4px}
 .page-subtitle svg{flex-shrink:0}
-@keyframes noticeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
-.rotate-notice{background:rgba(var(--accent-rgb),0.12);color:var(--accent);border:1px solid rgba(var(--accent-rgb),0.25);border-radius:10px;padding:10px 16px;text-align:center;font-size:0.82rem;font-weight:600;letter-spacing:1px;margin-bottom:12px;display:none}
-.rotate-notice.visible{display:block;animation:noticeIn .3s ease}
+@keyframes ringSpin{to{transform:rotate(-360deg)}}
+.rotate-ring-wrap{height:28px;display:flex;align-items:center;justify-content:center;margin-bottom:8px}
+.rotate-ring{position:relative;width:28px;height:28px;opacity:0;transition:opacity .25s;pointer-events:none}
+.rotate-ring.visible{opacity:1}
+.rotate-ring-spin{position:relative;width:100%;height:100%;animation:ringSpin 1.6s linear infinite}
+.rotate-ring-dot{position:absolute;top:50%;left:50%;width:4px;height:4px;margin:-2px 0 0 -2px;border-radius:50%}
+.rotate-ring-dot-a{background:var(--a)}
+.rotate-ring-dot-b{background:var(--b)}
+.rotate-ring-net{position:absolute;top:50%;left:50%;width:7px;height:7px;margin:-3.5px 0 0 -3.5px;border-radius:50%;background:var(--elem);border:1px solid rgba(var(--accent-rgb),0.6)}
 .timer-val{font-size:3rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--accent);letter-spacing:6px;line-height:1}
 .timer-sub{font-size:0.55rem;letter-spacing:3px;text-transform:uppercase;color:var(--accent);opacity:0.5;margin-top:6px}
 .scores.timer-active .set-badge{top:6px;transform:none}
@@ -300,7 +306,6 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
   </div>
 
   <div class="scoreboard">
-    <div class="rotate-notice" id="rotateNotice">&#8635; Players rotate positions</div>
     <div class="scores">
       <div class="set-badge set-badge-a" id="setA">0</div>
       <div class="set-badge set-badge-b" id="setB">0</div>
@@ -333,6 +338,22 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
       </div>
     </div>
 
+    <div class="rotate-ring-wrap">
+      <div class="rotate-ring" id="rotateRing" aria-hidden="true">
+        <span class="rotate-ring-net"></span>
+        <div class="rotate-ring-spin">
+          <span class="rotate-ring-dot rotate-ring-dot-a" style="transform:rotate(0deg) translate(11px);opacity:1"></span>
+          <span class="rotate-ring-dot rotate-ring-dot-a" style="transform:rotate(-45deg) translate(11px);opacity:.45"></span>
+          <span class="rotate-ring-dot rotate-ring-dot-a" style="transform:rotate(-90deg) translate(11px);opacity:.22"></span>
+          <span class="rotate-ring-dot rotate-ring-dot-a" style="transform:rotate(-135deg) translate(11px);opacity:.1"></span>
+          <span class="rotate-ring-dot rotate-ring-dot-b" style="transform:rotate(180deg) translate(11px);opacity:1"></span>
+          <span class="rotate-ring-dot rotate-ring-dot-b" style="transform:rotate(135deg) translate(11px);opacity:.45"></span>
+          <span class="rotate-ring-dot rotate-ring-dot-b" style="transform:rotate(90deg) translate(11px);opacity:.22"></span>
+          <span class="rotate-ring-dot rotate-ring-dot-b" style="transform:rotate(45deg) translate(11px);opacity:.1"></span>
+        </div>
+      </div>
+    </div>
+
     <div class="set-history" id="setHistory" style="display:none"></div>
     <div class="ratio-bar"><div class="ratio-a" id="ratioA"></div><div class="ratio-b" id="ratioB"></div></div>
 
@@ -350,8 +371,9 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
   </div>
 
   <div class="settings" style="margin-top:12px">
-    <div class="setting-group" style="margin:0">
-      <button class="btn" style="width:100%" onclick="action('/timeout',this)">Timeout</button>
+    <div class="setting-group" style="margin:0;display:flex;gap:8px">
+      <button class="btn" style="flex:1" onclick="action('/timeout',this)">Timeout</button>
+      <button class="btn" style="flex:1" onclick="action('/medical',this)">Medical</button>
     </div>
   </div>
 
@@ -617,19 +639,8 @@ let _isConnecting = false;
 let _repeatTimer = null, _repeatStart = null;
 let _pendingAction = null;
 let _pendingCallback = null;
-let _lastRotations = -1;
-let _rotateNoticeTimer = null;
 let _localTimerInterval = null;
 let _localTimerEndMs = 0;
-
-function showRotationNotice() {
-  if (_rotateNoticeTimer) clearTimeout(_rotateNoticeTimer);
-  const el = document.getElementById('rotateNotice');
-  el.classList.remove('visible');
-  void el.offsetWidth;
-  el.classList.add('visible');
-  _rotateNoticeTimer = setTimeout(() => el.classList.remove('visible'), 4000);
-}
 
 function _showTimerView(label) {
   document.getElementById('timerSub').textContent = label;
@@ -822,17 +833,21 @@ async function refresh() {
       hist.style.display = 'none';
     }
 
-    // Rotation notice
-    if (d.rotations !== undefined) {
-      if (_lastRotations >= 0 && d.rotations > _lastRotations) showRotationNotice();
-      _lastRotations = d.rotations;
-    }
+    // Rotation ring: visible for exactly as long as the score sits at a
+    // rotation point (mirrors the LED board's own _isRotationPoint()).
+    const rotating = !setWon && ((d.scoreA + d.scoreB) % 4) === 3;
+    document.getElementById('rotateRing').classList.toggle('visible', rotating);
 
-    // Break timer / timeout display
+    // Break timer / timeout / medical display
     const breakSecs = d.breakTimer   || 0;
     const toSecs    = d.timeoutTimer || 0;
+    const medSecs   = d.medicalTimer || 0;
 
-    if (toSecs > 0) {
+    if (medSecs > 0) {
+      _showTimerView('Medical');
+      _localTimerEndMs = Date.now() + medSecs * 1000;
+      updateTimerDisplay();
+    } else if (toSecs > 0) {
       _showTimerView('Time Out');
       _localTimerEndMs = Date.now() + toSecs * 1000;
       updateTimerDisplay();
@@ -1831,6 +1846,7 @@ inline void init() {
     json += "\"boardId\":\"" + WiFiMgr::getScoreboardId() + "\",";
     json += "\"breakTimer\":" + String(ScoreActions::breakTimerRemainingMs() / 1000) + ",";
     json += "\"timeoutTimer\":" + String(ScoreActions::timeoutCountdownMs() / 1000) + ",";
+    json += "\"medicalTimer\":" + String(ScoreActions::medicalCountdownMs() / 1000) + ",";
     json += "\"rotations\":" + String(ScoreActions::getRotationCount()) + ",";
     json += "\"setsPlayed\":" + String(sSetA + sSetB) + ",";
     json += "\"histA\":[";
@@ -1876,6 +1892,7 @@ inline void init() {
     server->send(200, "text/plain", "OK");
   });
   server->on("/timeout", HTTP_POST, []() { ScoreActions::apply("timeout"); server->send(200, "text/plain", "OK"); });
+  server->on("/medical", HTTP_POST, []() { ScoreActions::apply("medical"); server->send(200, "text/plain", "OK"); });
   server->on("/reset",   HTTP_POST, []() { ScoreActions::apply("reset");   server->send(200, "text/plain", "OK"); });
 
   server->on("/serve/first", HTTP_POST, []() {
