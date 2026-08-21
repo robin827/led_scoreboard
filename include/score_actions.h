@@ -4,6 +4,7 @@
 #include "score.h"
 #include "led.h"
 #include "score_logger.h"
+#include "score_persist.h"
 
 extern Score currentScore;
 extern SemaphoreHandle_t scoreMutex;
@@ -61,6 +62,7 @@ inline bool isDimActive() { return _dimActive; }
 // Call from main loop (Core 1) only — all LED changes happen here
 inline void tickBatterySaver() {
   if (_wantsWake && _dimActive) {
+    Serial.println("[BATSAVER] waking — notifyActivity() fired while asleep");
     _wantsWake = false;
     _dimActive = false;
     xSemaphoreTake(scoreMutex, portMAX_DELAY);
@@ -170,7 +172,7 @@ inline bool apply(const char* cmd) {
     else { ok = currentScore.nextSet(); changed = ok; if (ok) didNextSet = true; }
   }
   else if (strcmp(cmd, "nextset") == 0) { ok = currentScore.nextSet(); changed = ok; if (ok) didNextSet = true; }
-  else if (strcmp(cmd, "reset")   == 0) { currentScore.reset(); ScoreLogger::reset(); }
+  else if (strcmp(cmd, "reset")   == 0) { currentScore.reset(); ScoreLogger::reset(); ScorePersist::persistNowLocked(); }
   else { changed = false; ok = false; }
 
   if (didIncrement) {

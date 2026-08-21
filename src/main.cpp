@@ -12,6 +12,7 @@
 #include "firebase.h"
 #include "portal.h"
 #include "espnow_handler.h"
+#include "score_persist.h"
 
 Score currentScore;
 SemaphoreHandle_t scoreMutex = NULL;
@@ -25,10 +26,24 @@ void firebaseTask(void*) {
 
   uint32_t lastRead          = 0;
   uint8_t  consecutiveErrors = 0;
+  // Held off until the first Firebase read succeeds — see its use below.
+  // Without this, a board that just booted (currentScore restored from NVS
+  // by ScorePersist::load(), team/player names restored from NVS by
+  // TeamNames::init() — both possibly stale relative to whatever happened
+  // in Firebase while this board was off/rebooting) would compare its own
+  // restored state against lastWritten/lastWrittenNames's zeroed/empty
+  // defaults on the very first loop iteration, see a "change", and push its
+  // own guess up to Firebase BEFORE ever reading what's actually there —
+  // silently overwriting genuinely newer data from another writer with
+  // stale local memory. Reading first, unconditionally, before ever
+  // considering a push, is what makes "board reboots, then reads whatever's
+  // in the DB" actually true for this mode.
+  bool didInitialRead = false;
 
   Score   lastWritten   = {};
-  uint8_t lastWrittenWP = 255;  // force first write of winPoints
-  uint8_t lastWrittenHC = 255;  // force first write of hardcap
+  uint8_t lastWrittenWP  = 255;  // force first write of winPoints
+  uint8_t lastWrittenHC  = 255;  // force first write of hardcap
+  uint8_t lastWrittenFmt = 255;  // force first write of format
   uint8_t lastWrittenFS = 255;
   TeamNames::Names lastWrittenNames = {};
 
@@ -40,31 +55,37 @@ void firebaseTask(void*) {
       Score local = currentScore;
       xSemaphoreGive(scoreMutex);
 
-      // Push local changes to Firebase
-      if (local.scoreA != lastWritten.scoreA || local.scoreB != lastWritten.scoreB ||
-          local.setA   != lastWritten.setA   || local.setB   != lastWritten.setB) {
+      // Push local changes to Firebase — gated on didInitialRead, see comment
+      // on its declaration above.
+      if (didInitialRead &&
+          (local.scoreA != lastWritten.scoreA || local.scoreB != lastWritten.scoreB ||
+           local.setA   != lastWritten.setA   || local.setB   != lastWritten.setB)) {
         if (Firebase::writeScore(local)) {
           lastWritten = local;
           lastRead = millis();
         }
       }
-      if (local.winPoints != lastWrittenWP) {
+      if (didInitialRead && local.winPoints != lastWrittenWP) {
         if (Firebase::writeWinPoints(local.winPoints)) lastWrittenWP = local.winPoints;
       }
-      if (local.hardcap != lastWrittenHC) {
+      if (didInitialRead && local.hardcap != lastWrittenHC) {
         if (Firebase::writeHardcap(local.hardcap)) lastWrittenHC = local.hardcap;
       }
-      if (local.firstServer != lastWrittenFS) {
+      if (didInitialRead && local.format != lastWrittenFmt) {
+        if (Firebase::writeFormat(local.format)) lastWrittenFmt = local.format;
+      }
+      if (didInitialRead && local.firstServer != lastWrittenFS) {
         if (Firebase::writeFirstServer(local)) lastWrittenFS = local.firstServer;
       }
 
       TeamNames::Names names = TeamNames::get();
-      if (strcmp(names.teamA, lastWrittenNames.teamA)       != 0 ||
-          strcmp(names.teamB, lastWrittenNames.teamB)       != 0 ||
-          strcmp(names.playerA1, lastWrittenNames.playerA1) != 0 ||
-          strcmp(names.playerA2, lastWrittenNames.playerA2) != 0 ||
-          strcmp(names.playerB1, lastWrittenNames.playerB1) != 0 ||
-          strcmp(names.playerB2, lastWrittenNames.playerB2) != 0) {
+      if (didInitialRead &&
+          (strcmp(names.teamA, lastWrittenNames.teamA)       != 0 ||
+           strcmp(names.teamB, lastWrittenNames.teamB)       != 0 ||
+           strcmp(names.playerA1, lastWrittenNames.playerA1) != 0 ||
+           strcmp(names.playerA2, lastWrittenNames.playerA2) != 0 ||
+           strcmp(names.playerB1, lastWrittenNames.playerB1) != 0 ||
+           strcmp(names.playerB2, lastWrittenNames.playerB2) != 0)) {
         if (Firebase::writeTeamNames(names)) lastWrittenNames = names;
       }
 
@@ -76,18 +97,23 @@ void firebaseTask(void*) {
         continue;
       }
 
-      // Periodically read Firebase for external changes
+      // Periodically read Firebase for external changes — always due
+      // immediately (ignoring the poll interval) until the very first read
+      // of this boot succeeds, so a freshly-booted board's NVS-restored
+      // guess never sits around unconfirmed for a full poll interval before
+      // being checked against reality.
       uint32_t interval = consecutiveErrors > 0 ? INTERVAL_ERR : Firebase::getPollIntervalMs();
       uint32_t now = millis();
-      if ((now - lastRead) >= interval) {
+      if (!didInitialRead || (now - lastRead) >= interval) {
         lastRead = now;
         Score db = local;
         if (Firebase::readScore(db)) {
           consecutiveErrors = 0;
+          didInitialRead = true;
           if (db.scoreA      != lastWritten.scoreA     || db.scoreB     != lastWritten.scoreB   ||
               db.setA        != lastWritten.setA        || db.setB       != lastWritten.setB     ||
               db.firstServer != lastWritten.firstServer || db.winPoints  != lastWritten.winPoints ||
-              db.hardcap     != lastWritten.hardcap) {
+              db.hardcap     != lastWritten.hardcap      || db.format     != lastWritten.format) {
 
             // Detect set change (active set number increased)
             bool setJustEnded = (db.setA + db.setB) > (lastWritten.setA + lastWritten.setB);
@@ -106,10 +132,11 @@ void firebaseTask(void*) {
             ScoreActions::applyFromDatabase(db);
             if (setJustEnded) ScoreActions::startBreakTimer();
 
-            lastWritten   = db;
-            lastWrittenWP = db.winPoints;
-            lastWrittenHC = db.hardcap;
-            lastWrittenFS = db.firstServer;
+            lastWritten    = db;
+            lastWrittenWP  = db.winPoints;
+            lastWrittenHC  = db.hardcap;
+            lastWrittenFmt = db.format;
+            lastWrittenFS  = db.firstServer;
           }
         } else {
           consecutiveErrors++;
@@ -164,6 +191,10 @@ void setup() {
   Mode::init();
   ScoreActions::initBatterySaver();
   TeamNames::init();
+  // Restore the last known score/sets/settings before anything renders, so
+  // the boot animation is followed by the real state instead of 0-0 — see
+  // score_persist.h for why this matters most in LOCAL mode.
+  ScorePersist::load();
 
   // 2. WiFi (AP always on; STA skipped in Local mode)
   Serial.println("[2/4] Init WiFi...");
@@ -196,6 +227,7 @@ void loop() {
   Portal::tick();
   EspNow::tick();
   ScoreActions::tickBatterySaver();
+  ScorePersist::tick();
 
   // Sleep animation: replaces all display logic while inactive
   if (ScoreActions::isDimActive()) {

@@ -181,6 +181,8 @@ static void _handleCommand(const String& payload) {
   const char* team   = doc["team"]   | "";
   int         delta  = doc["delta"]  | 0;
   int         tA     = doc["teamA"]  | -1;
+
+  Serial.printf("[WS] cmd received: action='%s' (dimActive=%d)\n", action, ScoreActions::isDimActive());
   int         tB     = doc["teamB"]  | -1;
 
   if (strcmp(action, "increment_score") == 0) {
@@ -202,6 +204,29 @@ static void _handleCommand(const String& payload) {
     xSemaphoreTake(scoreMutex, portMAX_DELAY);
     if (tA >= 0) currentScore.scoreA = (uint8_t)constrain(tA, 0, 99);
     if (tB >= 0) currentScore.scoreB = (uint8_t)constrain(tB, 0, 99);
+    // setA/setB/histA/histB are optional — sent by the manager server's
+    // Firebase bridge alongside the live score whenever the remote match
+    // implies a different set than this board is currently on (e.g. someone
+    // advanced the set from a different client on the same Firebase channel).
+    // Without applying these too, this board's own setA/setB would stay on
+    // the old set number, and its next state push would rebuild Firebase's
+    // score node from that stale set count — silently overwriting/deleting
+    // whatever set data the other client had just created. See
+    // "roundnet scoreboards manager/server/firebaseBridge.js" pushDownToBoard.
+    int newSetA = doc["setA"] | -1;
+    int newSetB = doc["setB"] | -1;
+    if (newSetA >= 0) currentScore.setA = (uint8_t)constrain(newSetA, 0, 99);
+    if (newSetB >= 0) currentScore.setB = (uint8_t)constrain(newSetB, 0, 99);
+    JsonArray newHistA = doc["histA"];
+    if (newHistA) {
+      for (size_t i = 0; i < newHistA.size() && i < 3; i++)
+        currentScore.histA[i] = (uint8_t)constrain((int)newHistA[i], 0, 99);
+    }
+    JsonArray newHistB = doc["histB"];
+    if (newHistB) {
+      for (size_t i = 0; i < newHistB.size() && i < 3; i++)
+        currentScore.histB[i] = (uint8_t)constrain((int)newHistB[i], 0, 99);
+    }
     LED::update(currentScore);
     xSemaphoreGive(scoreMutex);
     pushState();
@@ -215,9 +240,6 @@ static void _handleCommand(const String& payload) {
   } else if (strcmp(action, "set_brightness") == 0) {
     ScoreActions::notifyActivity();
     LED::setBrightness((uint8_t)constrain(value, 1, 255));
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
-    LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
     pushState();
   } else if (strcmp(action, "next_set") == 0) {
     ScoreActions::apply("nextset");

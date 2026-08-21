@@ -74,6 +74,24 @@ inline String getChannel() {
   return _channelCache;
 }
 
+// ── Parse game_settings.set_mode into the firmware's own format enum ──────
+// set_mode is a free-form string owned jointly by whichever writer last set
+// it (this board, the manager server's firebaseBridge.js, or the Fwango
+// bridge in TournamentLiveScores — see that project's CLAUDE.md) — values
+// seen in practice include plain digit strings ("1"/"2"/"3", this board's
+// own convention: total sets in the match) and labels like "Best of 3".
+// Mirrors TournamentLiveScores/public/index.html's formatLabel()/
+// setsToWinMatch() parsing so all readers agree on what a given string means.
+inline uint8_t _parseSetMode(const String& raw) {
+  String text = raw;
+  text.trim();
+  String lower = text;
+  lower.toLowerCase();
+  if (text == "1" || lower.indexOf("1 set") >= 0) return 0;
+  if (text == "2" || lower.indexOf("2 set") >= 0) return 1;
+  return 2; // default: Best of 3 (also covers "3", "Best of 3", unrecognized)
+}
+
 // ── Lecture du score depuis Firebase ──────────────────────────────────────
 
 inline bool readScore(Score& score) {
@@ -171,6 +189,25 @@ inline bool readScore(Score& score) {
     int hc = payload.substring(valStart).toInt();
     if (hc == 0 || (hc >= 5 && hc <= 99)) score.hardcap = (uint8_t)hc;
   }
+  // Parse game_settings.set_mode (this board's own "format": 0=BO1, 1=2 sets,
+  // 2=BO3) — same node other tools call "Game Mode"/"set_mode", see
+  // _parseSetMode() above for why the values aren't a simple number match.
+  int idxSM = payload.indexOf("\"set_mode\":");
+  if (idxSM >= 0) {
+    int valStart = idxSM + 11;
+    while (valStart < (int)payload.length() && payload[valStart] == ' ') valStart++;
+    String smVal;
+    if (valStart < (int)payload.length() && payload[valStart] == '"') {
+      int q2 = payload.indexOf('"', valStart + 1);
+      if (q2 > valStart) smVal = payload.substring(valStart + 1, q2);
+    } else {
+      int end = valStart;
+      while (end < (int)payload.length() && payload[end] != ',' && payload[end] != '}') end++;
+      smVal = payload.substring(valStart, end);
+      smVal.trim();
+    }
+    if (smVal.length() > 0) score.format = _parseSetMode(smVal);
+  }
 
   // Parse starting_server: "a"/"b" → Team A (firstServer=0), "c"/"d" → Team B (firstServer=1)
   int idxSS = payload.indexOf("\"starting_server\":", searchStart);
@@ -183,7 +220,7 @@ inline bool readScore(Score& score) {
     }
   }
 
-  // Compte les sets gagnés
+  // Compte les sets gagnés (+ capture leur score final dans histA/histB)
   score.setA = 0;
   score.setB = 0;
 
@@ -193,7 +230,7 @@ inline bool readScore(Score& score) {
     if (prevIdx >= 0) {
       int prevIdxA = payload.indexOf("\"team_a_score\":", prevIdx);
       int prevIdxB = payload.indexOf("\"team_b_score\":", prevIdx);
-      
+
       if (prevIdxA >= 0 && prevIdxB >= 0) {
         int prevScoreA = payload.substring(prevIdxA + 15).toInt();
         int prevScoreB = payload.substring(prevIdxB + 15).toInt();
@@ -202,6 +239,22 @@ inline bool readScore(Score& score) {
           score.setA++;
         } else if (prevScoreB > prevScoreA) {
           score.setB++;
+        }
+
+        // Without this, `score` (the `db` passed in by firebaseTask) keeps
+        // whatever histA/histB it started with — which, on a set transition
+        // driven by an external writer rather than this board's own
+        // nextSet(), is the PRE-transition (stale, possibly empty) history.
+        // applyFromDatabase() then replaces currentScore wholesale with that
+        // stale history, and this board's own next writeScore() rebuilds
+        // score/set_<N> in Firebase straight from it — silently overwriting
+        // the real completed-set score with 0 (or whatever was left in the
+        // array). Capturing it here, from the exact same parse already used
+        // to count setA/setB, keeps the board's history in sync with
+        // whichever writer actually created the set.
+        if (i - 1 < 3) {
+          score.histA[i - 1] = (uint8_t)constrain(prevScoreA, 0, 99);
+          score.histB[i - 1] = (uint8_t)constrain(prevScoreB, 0, 99);
         }
       }
     }
@@ -355,6 +408,36 @@ inline bool writeWinPoints(uint8_t winPoints) {
 
   if (code < 0) { _resetClient(); return false; }
   Serial.printf("[Firebase] writeWinPoints OK: %d (code %d)\n", winPoints, code);
+  return code == 200;
+}
+
+// ── Write format (as game_settings.set_mode, the shared "Game Mode" field) ──
+// Written as a plain digit string ("1"/"2"/"3" = total sets in the match) —
+// the same convention the Fwango bridge already writes via numberOfGames —
+// so every existing reader (friend's tool, TournamentLiveScores) parses it
+// correctly without needing to special-case this board as a writer.
+
+inline bool writeFormat(uint8_t format) {
+  String channel = getChannel();
+  if (channel.isEmpty()) return false;
+  if (!WiFi.isConnected()) return false;
+  IPAddress localIP = WiFi.localIP();
+  if (localIP[0] == 0) return false;
+
+  const char* setMode = (format == 0) ? "1" : (format == 1) ? "2" : "3";
+
+  HTTPClient http;
+  http.setTimeout(5000);
+  http.setReuse(false);
+  String url = String(FIREBASE_DATABASE_URL)
+    + "/match-" + channel + "/game_settings/set_mode.json";
+  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
+  http.addHeader("Content-Type", "application/json");
+  int code = http.PUT("\"" + String(setMode) + "\"");
+  http.end();
+
+  if (code < 0) { _resetClient(); return false; }
+  Serial.printf("[Firebase] writeFormat OK: %s (code %d)\n", setMode, code);
   return code == 200;
 }
 

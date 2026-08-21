@@ -467,7 +467,7 @@ inline void showTeamIntro(const TeamNames::Names& n) {
 
   static constexpr int CHAR_W = 6;  // 5px glyph + 1px gap
   static constexpr int GAP_W  = 12; // gap between loop repeats
-  static constexpr uint32_t SPEED_PX_PER_SEC = 10;
+  static constexpr uint32_t SPEED_PX_PER_SEC = 20;
 
   int textW = (leftLen + sepLen + rightLen) * CHAR_W;
   int loopW = textW + GAP_W;
