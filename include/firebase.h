@@ -267,6 +267,17 @@ inline bool readScore(Score& score) {
 }
 
 // ── Ecriture du score vers Firebase ───────────────────────────────────────
+// starting_server/starting_receiver for the active set must be written in
+// THIS SAME PATCH, not a separate request — writeScore's PATCH replaces the
+// entire "score" node wholesale (Firebase PATCH semantics: a top-level key's
+// value is written as-is, not deep-merged), so if this call only ever wrote
+// team_a_score/team_b_score, every score update would silently wipe whatever
+// starting_server the board (or anything else) had previously written for
+// the active set — leaving the live-scores page's serve indicator missing
+// on every ordinary point, not just occasionally. Same bug class already
+// found and fixed in the manager server's firebaseBridge.js (see that
+// file's "used to be two separate PATCH requests" note); this is the
+// FIREBASE-mode (direct board→Firebase) equivalent, previously unfixed.
 
 inline bool writeScore(const Score& score) {
   String channel = getChannel();
@@ -306,6 +317,8 @@ inline bool writeScore(const Score& score) {
   String currentKey = "set_" + String(activeSet);
   doc["score"][currentKey]["team_a_score"] = score.scoreA;
   doc["score"][currentKey]["team_b_score"] = score.scoreB;
+  doc["score"][currentKey]["starting_server"]   = (score.firstServer == 0) ? "a" : "c";
+  doc["score"][currentKey]["starting_receiver"] = (score.firstServer == 0) ? "c" : "a";
 
   String payload;
   serializeJson(doc, payload);
@@ -325,6 +338,10 @@ inline bool writeScore(const Score& score) {
 }
 
 // ── Write starting_server + starting_receiver for the active set in one PATCH ──
+// writeScore() above now also carries these fields on every score push, so
+// this is only still needed for the standalone case: firstServer changes
+// (or a new set starts) without scoreA/scoreB/setA/setB also changing on
+// that same tick — main.cpp gates the call on exactly that condition.
 // firstServer=0 (Team A / yellow): server="a", receiver="c"
 // firstServer=1 (Team B / blue):   server="c", receiver="a"
 
@@ -439,6 +456,81 @@ inline bool writeFormat(uint8_t format) {
   if (code < 0) { _resetClient(); return false; }
   Serial.printf("[Firebase] writeFormat OK: %s (code %d)\n", setMode, code);
   return code == 200;
+}
+
+// ── Shared timer (timeout/medical/break) state ───────────────────────────────
+// Mirrors the RTDB "match-<channel>/timer" node also written by the manager
+// server's firebaseBridge.js for CENTRAL-mode boards (see that file's
+// pushUpToFirebase/pushDownToBoard) and read/written by scoreboard/'s
+// input.html + index.html. No duration field on purpose: every reader keeps
+// its own copy of the same fixed durations this board already hardcodes in
+// score_actions.h (BREAK/TIMEOUT/MEDICAL_*_MS) — RTDB only ever carries
+// *which* timer (if any) is running, never how long it lasts.
+
+inline bool writeTimerState(const char* type) {
+  String channel = getChannel();
+  if (channel.isEmpty()) return false;
+  if (!WiFi.isConnected()) return false;
+  IPAddress localIP = WiFi.localIP();
+  if (localIP[0] == 0) return false;
+
+  HTTPClient http;
+  http.setTimeout(5000);
+  http.setReuse(false);
+  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/timer.json";
+  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
+  http.addHeader("Content-Type", "application/json");
+
+  int code;
+  if (type == nullptr || type[0] == '\0') {
+    code = http.PUT("null"); // deletes the whole "timer" node
+  } else {
+    JsonDocument doc;
+    doc["type"] = type;
+    doc["started_at"][".sv"] = "timestamp"; // Firebase server-timestamp sentinel
+    String payload;
+    serializeJson(doc, payload);
+    // PUT (not PATCH): replaces the node wholesale so a stale started_at from
+    // a previous timer of the same type never lingers under the new one.
+    code = http.PUT(payload);
+  }
+  http.end();
+
+  if (code < 0) { _resetClient(); return false; }
+  Serial.printf("[Firebase] writeTimerState OK: %s (code %d)\n", (type && type[0]) ? type : "(none)", code);
+  return code == 200;
+}
+
+// Returns true on a successful read, with outType set to "timeout"/"medical"/
+// "break", or "" when no timer is currently active in Firebase.
+inline bool readTimerState(String& outType) {
+  String channel = getChannel();
+  if (channel.isEmpty()) return false;
+  if (!WiFi.isConnected()) return false;
+  IPAddress localIP = WiFi.localIP();
+  if (localIP[0] == 0) return false;
+
+  HTTPClient http;
+  http.setTimeout(8000);
+  http.setReuse(false);
+  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/timer/type.json";
+  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
+  int code = http.GET();
+  if (code != 200) {
+    http.end();
+    if (code < 0) _resetClient();
+    return false;
+  }
+  String payload = http.getString();
+  http.end();
+  payload.trim();
+
+  if (payload.length() >= 2 && payload[0] == '"' && payload[payload.length() - 1] == '"') {
+    outType = payload.substring(1, payload.length() - 1);
+  } else {
+    outType = ""; // "null" (no timer) or unexpected shape
+  }
+  return true;
 }
 
 // ── Write team/player names ──────────────────────────────────────────────────

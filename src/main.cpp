@@ -45,7 +45,13 @@ void firebaseTask(void*) {
   uint8_t lastWrittenHC  = 255;  // force first write of hardcap
   uint8_t lastWrittenFmt = 255;  // force first write of format
   uint8_t lastWrittenFS = 255;
+  uint8_t lastWrittenFSSet = 255;  // active-set index (setA+setB) writeFirstServer last wrote for
   TeamNames::Names lastWrittenNames = {};
+  // "" = no active timer, matching this board's always-clear-on-boot local
+  // state — unlike score/names there's no NVS-restored guess to protect
+  // against, so no special force-write-first sentinel is needed here.
+  String lastWrittenTimerType    = "";
+  String lastSeenRemoteTimerType = "";
 
   for (;;) {
     WiFiMgr::tick();
@@ -74,8 +80,19 @@ void firebaseTask(void*) {
       if (didInitialRead && local.format != lastWrittenFmt) {
         if (Firebase::writeFormat(local.format)) lastWrittenFmt = local.format;
       }
-      if (didInitialRead && local.firstServer != lastWrittenFS) {
-        if (Firebase::writeFirstServer(local)) lastWrittenFS = local.firstServer;
+      // Re-fires on a new set too, not just when firstServer's raw value
+      // changes — nextSet() (score.h) never touches firstServer, it just
+      // carries the previous set's value forward, and a scorekeeper very
+      // commonly re-declares the SAME team to serve first in the next set
+      // (nothing forces alternation). Gating on value-change alone left
+      // that new set's own score/set_N node in Firebase with no
+      // starting_server at all whenever that happened — silently dropping
+      // the live hub's serve indicator for the whole set, since it derives
+      // serving from that per-set field and had nothing carried over to
+      // read (each set is a distinct node, not inherited from the last).
+      uint8_t activeSetIdx = local.setA + local.setB;
+      if (didInitialRead && (local.firstServer != lastWrittenFS || activeSetIdx != lastWrittenFSSet)) {
+        if (Firebase::writeFirstServer(local)) { lastWrittenFS = local.firstServer; lastWrittenFSSet = activeSetIdx; }
       }
 
       TeamNames::Names names = TeamNames::get();
@@ -87,6 +104,21 @@ void firebaseTask(void*) {
            strcmp(names.playerB1, lastWrittenNames.playerB1) != 0 ||
            strcmp(names.playerB2, lastWrittenNames.playerB2) != 0)) {
         if (Firebase::writeTeamNames(names)) lastWrittenNames = names;
+      }
+
+      // Push this board's own active timer (or its absence, on natural
+      // expiry/cancel) up to Firebase — see firebase.h's writeTimerState.
+      const char* localTimerType = ScoreActions::activeTimerType();
+      String localTimerStr = localTimerType ? String(localTimerType) : String("");
+      if (didInitialRead && localTimerStr != lastWrittenTimerType) {
+        if (Firebase::writeTimerState(localTimerType)) {
+          lastWrittenTimerType    = localTimerStr;
+          // We just authored this value ourselves — treat it as already
+          // "seen" so the next read tick doesn't re-apply(type) on top of
+          // the countdown we just started (which would restart it from
+          // scratch every poll interval instead of counting down).
+          lastSeenRemoteTimerType = localTimerStr;
+        }
       }
 
       // Too many errors: pause 30s
@@ -160,6 +192,21 @@ void firebaseTask(void*) {
                             dbNames.playerA1, dbNames.playerA2,
                             dbNames.playerB1, dbNames.playerB2);
             lastWrittenNames = dbNames;
+          }
+        }
+
+        // Pick up a timer started/cancelled from another writer (scoreboard/'s
+        // input.html, or the manager server relaying a CENTRAL-mode board on
+        // the same channel). Read AFTER the score block above so that, if a
+        // set transition and a timer change land in the same tick,
+        // applyFromDatabase()'s unconditional timer-flags-clear (score.h)
+        // never wipes a timer we're about to (re)apply right here.
+        String remoteTimerType;
+        if (Firebase::readTimerState(remoteTimerType)) {
+          if (remoteTimerType != lastSeenRemoteTimerType) {
+            ScoreActions::apply(remoteTimerType.length() > 0 ? remoteTimerType.c_str() : "stoptimer");
+            lastSeenRemoteTimerType = remoteTimerType;
+            lastWrittenTimerType    = remoteTimerType;
           }
         }
       }

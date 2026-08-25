@@ -140,6 +140,7 @@ inline void pushState() {
   doc["setA"]      = s.setA;
   doc["setB"]      = s.setB;
   doc["timeoutMs"] = ScoreActions::timeoutCountdownMs();
+  doc["medicalMs"] = ScoreActions::medicalCountdownMs();
   doc["breakMs"]   = ScoreActions::breakTimerRemainingMs();
 
   uint8_t setsPlayed = s.setA + s.setB;
@@ -244,8 +245,13 @@ static void _handleCommand(const String& payload) {
   } else if (strcmp(action, "next_set") == 0) {
     ScoreActions::apply("nextset");
     pushState();
-  } else if (strcmp(action, "timeout") == 0) {
-    ScoreActions::apply("timeout");
+  } else if (strcmp(action, "timeout") == 0 || strcmp(action, "medical") == 0 ||
+             strcmp(action, "break")   == 0 || strcmp(action, "stoptimer") == 0) {
+    // Relayed from the manager server's Firebase bridge (or, in the future,
+    // any other WS-side trigger) when the shared RTDB timer/type node
+    // changes on a channel this board is synced to — see firebaseBridge.js
+    // pushDownToBoard() and the "timer" node schema noted there.
+    ScoreActions::apply(action);
     pushState();
   } else if (strcmp(action, "set_hardcap") == 0) {
     ScoreActions::notifyActivity();

@@ -109,6 +109,17 @@ inline uint32_t medicalCountdownMs() {
   return MEDICAL_DURATION_MS - elapsed;
 }
 
+// Which of timeout/medical/break is currently running, or nullptr if none —
+// same priority order as the LED display loop in main.cpp (timeout > medical
+// > break), used by firebase.h to decide what (if anything) to write to the
+// shared RTDB "timer" node.
+inline const char* activeTimerType() {
+  if (_timeoutActive) return "timeout";
+  if (_medicalActive) return "medical";
+  if (_timerActive)   return "break";
+  return nullptr;
+}
+
 // Apply a score state received from Firebase — cancels break/timeout timers, updates display
 inline void applyFromDatabase(const Score& db) {
   notifyActivity();
