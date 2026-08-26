@@ -17,6 +17,7 @@
 #include "firebase.h"
 #include "team_names.h"
 #include <Update.h>
+#include <Preferences.h>
 
 // Defined in main.cpp — forward declarations so the /mode route can manage the Firebase task
 extern TaskHandle_t firebaseTaskHandle;
@@ -542,6 +543,15 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
       </div>
   </div>
 
+  <div class="settings" style="margin-top:12px">
+    <div class="setting-group" style="margin-bottom:0">
+      <label class="setting-label">Settings Password</label>
+      <input type="password" class="input" id="pinNewInput" placeholder="New password (blank to remove)" style="margin-bottom:8px">
+      <button class="btn" style="width:100%;background:var(--elem);color:var(--accent)" onclick="saveSettingsPin()">Save Password</button>
+      <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">When set, this is required to open this Settings tab from a fresh page load. Leave blank and save to remove protection.</div>
+    </div>
+  </div>
+
 </div><!-- /pageSettings -->
 
 <div id="pageOverlay" class="page">
@@ -612,6 +622,19 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
     <span>Overlay</span>
   </button>
 </nav>
+
+<div class="modal-overlay" id="pinOverlay" onclick="if(event.target===this)closePinPrompt()">
+  <div class="modal">
+    <div class="modal-title">Settings Locked</div>
+    <div class="modal-desc">Enter the settings password to continue.</div>
+    <input type="password" class="input" id="pinInput" placeholder="Password" style="margin-bottom:10px" onkeydown="if(event.key==='Enter')submitPin()">
+    <div id="pinErr" style="display:none;color:var(--b);font-size:0.78rem;margin:-4px 0 14px"></div>
+    <div class="modal-btns">
+      <button class="modal-cancel" onclick="closePinPrompt()">Cancel</button>
+      <button class="modal-ok modal-ok-yellow" onclick="submitPin()">Unlock</button>
+    </div>
+  </div>
+</div>
 
 <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
   <div class="modal">
@@ -815,6 +838,10 @@ async function refresh() {
       const fwCur = document.getElementById('fwCur');
       if (fwCur) fwCur.textContent = 'v' + d.version;
     }
+    if (d.settingsLocked !== undefined) {
+      _settingsPinRequired = d.settingsLocked;
+      if (_settingsPinRequired) _tryAutoUnlockSettings();
+    }
     const hist = document.getElementById('setHistory');
     if (d.setsPlayed > 0 && d.histA && d.histB) {
       hist.style.display = 'flex';
@@ -946,7 +973,55 @@ const _PAGE_INFO = {
   pageOverlay:  {label:'Video Overlay Export',  icon:'<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>'}
 };
 
+let _settingsUnlocked = false;
+let _settingsPin = '';
+let _settingsPinRequired = false;
+let _pendingPageAfterUnlock = null;
+// Remembers a device across page loads/portal reopens so the pin isn't
+// re-typed every time — same soft-deterrent spirit as the rest of this gate
+// (see the comment above the /auth/settings handler), just persisted client
+// side instead of re-typed each visit. Only one silent attempt per page load:
+// once, not on every 2s /status poll, and only until it either succeeds or
+// fails (a wrong stored pin means it was changed elsewhere, so it's cleared
+// rather than retried forever).
+const _SETTINGS_PIN_STORAGE_KEY = 'scoreboardSettingsPin';
+let _autoUnlockAttempted = false;
+async function _tryAutoUnlockSettings() {
+  if (_autoUnlockAttempted || _settingsUnlocked) return;
+  _autoUnlockAttempted = true;
+  // Server-side first: recognizes this phone by IP even inside the OS's own
+  // "Sign in to network" popup, whose throwaway session never keeps the
+  // localStorage fallback below. Needs no stored pin at all.
+  try {
+    const r = await fetch('/auth/settings/check');
+    if (r.status === 200) { _settingsUnlocked = true; return; }
+  } catch(e) {}
+  // Falls back to a stored pin (a fresh boot forgets every remembered IP,
+  // or this is simply a different browser on the same phone) — still saves
+  // retyping it as long as localStorage survived.
+  const stored = localStorage.getItem(_SETTINGS_PIN_STORAGE_KEY);
+  if (!stored) return;
+  try {
+    const r = await fetch('/auth/settings', {method:'POST', body: stored});
+    if (r.status === 200) {
+      _settingsUnlocked = true;
+      _settingsPin = stored;
+    } else {
+      localStorage.removeItem(_SETTINGS_PIN_STORAGE_KEY);
+    }
+  } catch(e) {}
+}
+
 function showPage(id) {
+  if (id === 'pageSettings' && _settingsPinRequired && !_settingsUnlocked) {
+    _pendingPageAfterUnlock = id;
+    openPinPrompt();
+    return;
+  }
+  _showPageNow(id);
+}
+
+function _showPageNow(id) {
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === id));
   document.body.classList.toggle('top-align', id !== 'pageMain');
   document.querySelectorAll('.nav-item').forEach(b =>
@@ -957,6 +1032,52 @@ function showPage(id) {
     document.getElementById('subtitleText').textContent = info.label;
   }
   if (id === 'pageOverlay') fetchLog();
+}
+
+function openPinPrompt() {
+  document.getElementById('pinErr').style.display = 'none';
+  document.getElementById('pinInput').value = '';
+  document.getElementById('pinOverlay').classList.add('open');
+  setTimeout(() => document.getElementById('pinInput').focus(), 50);
+}
+function closePinPrompt() {
+  document.getElementById('pinOverlay').classList.remove('open');
+  _pendingPageAfterUnlock = null;
+}
+async function submitPin() {
+  const val = document.getElementById('pinInput').value;
+  try {
+    const r = await fetch('/auth/settings', {method:'POST', body: val});
+    if (r.status === 200) {
+      _settingsUnlocked = true;
+      _settingsPin = val;
+      localStorage.setItem(_SETTINGS_PIN_STORAGE_KEY, val);
+      document.getElementById('pinOverlay').classList.remove('open');
+      const target = _pendingPageAfterUnlock || 'pageSettings';
+      _pendingPageAfterUnlock = null;
+      _showPageNow(target);
+    } else {
+      document.getElementById('pinErr').textContent = 'Incorrect password';
+      document.getElementById('pinErr').style.display = 'block';
+    }
+  } catch(e) {}
+}
+
+async function saveSettingsPin() {
+  const val = document.getElementById('pinNewInput').value;
+  try {
+    const r = await fetch('/auth/setpin', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({current: _settingsPin, pin: val})});
+    if (r.status === 200) {
+      _settingsPin = val;
+      _settingsPinRequired = val.length > 0;
+      if (val.length > 0) localStorage.setItem(_SETTINGS_PIN_STORAGE_KEY, val);
+      else localStorage.removeItem(_SETTINGS_PIN_STORAGE_KEY);
+      document.getElementById('pinNewInput').value = '';
+      showToast(val.length > 0 ? 'Settings password set' : 'Settings password removed');
+    } else {
+      showToast('Failed to update password');
+    }
+  } catch(e) {}
 }
 
 async function setDimSleep(secs) {
@@ -1790,12 +1911,85 @@ fetchLog();redraw();
 </html>
 )rawhtml";
 
+// ── Settings-tab password gate ────────────────────────────────────────────
+// Client-side only (navigating to pageSettings prompts for it) — the browser
+// UI is the actual gate, not an auth wall on every settings endpoint. Empty
+// stored pin (the default) means the gate is disabled, so existing boards
+// behave exactly as before until someone opts in from the Settings page.
+inline String _getSettingsPin() {
+  Preferences p;
+  p.begin("portal", true);
+  String pin = p.getString("pin", "");
+  p.end();
+  return pin;
+}
+
+inline void _setSettingsPin(const String& pin) {
+  Preferences p;
+  p.begin("portal", false);
+  if (pin.length() == 0) p.remove("pin");
+  else p.putString("pin", pin);
+  p.end();
+}
+
+// ── Remembered devices (by IP) for the settings pin gate ──────────────────
+// A phone's own "Sign in to network" popup (Android's/iOS's captive-portal
+// assistant, auto-launched by the /generate_204 & /hotspot-detect.html routes
+// below) runs in a throwaway browser session that doesn't persist
+// localStorage across closes — so the client-side "remember this pin"
+// mechanism in the page's own JS never survives reopening that popup, even
+// though it works fine in an ordinary Safari/Chrome tab. Remembering by the
+// requesting IP instead sidesteps that entirely: the IP is a network-layer
+// property of the phone's DHCP lease on this AP, shared by every browser/
+// webview on that phone for as long as it stays connected — the captive
+// assistant popup, a reopened one, and a normal browser tab all present the
+// same IP. In-RAM only (not NVS) and capped at a handful of entries — this
+// is meant to smooth over exactly the "closed and reopened the popup" case
+// for whoever is currently on the AP, not to be a durable device registry;
+// it resets on reboot same as every other un-persisted runtime state here.
+static constexpr int _MAX_UNLOCKED_IPS = 8;
+static uint32_t _unlockedIps[_MAX_UNLOCKED_IPS] = {0};
+static int      _unlockedIpCount = 0;
+
+inline bool _isIpUnlocked(uint32_t ip) {
+  for (int i = 0; i < _unlockedIpCount; i++) if (_unlockedIps[i] == ip) return true;
+  return false;
+}
+inline void _rememberUnlockedIp(uint32_t ip) {
+  if (_isIpUnlocked(ip)) return;
+  if (_unlockedIpCount < _MAX_UNLOCKED_IPS) {
+    _unlockedIps[_unlockedIpCount++] = ip;
+  } else {
+    // Small array — a plain shift-and-append (evict oldest) costs nothing here.
+    memmove(_unlockedIps, _unlockedIps + 1, sizeof(uint32_t) * (_MAX_UNLOCKED_IPS - 1));
+    _unlockedIps[_MAX_UNLOCKED_IPS - 1] = ip;
+  }
+}
+// Called whenever the pin changes/is cleared so a stale IP from before the
+// change can't skip the new pin.
+inline void _forgetAllUnlockedIps() { _unlockedIpCount = 0; }
+
 inline void init() {
   Serial.println("[PORTAL] Starting...");
-  
+
+  // A phone that disconnects from this AP frees its DHCP-leased IP for
+  // reuse — the ESP32's own AP DHCP pool is tiny, so the very next phone to
+  // join is quite likely to be handed that exact same IP. Left unguarded,
+  // that new phone would silently inherit the previous one's remembered
+  // "unlocked" status via _isIpUnlocked purely by coincidence of IP reuse,
+  // without ever having entered any password — confirmed live: device A
+  // authenticates, disconnects; device B joins fresh afterward and gets
+  // waved straight in. Wiping the whole allowlist on ANY station leaving
+  // this AP closes that regardless of which IP it actually had — deliberately
+  // blunt rather than tracking per-IP ownership, since this AP normally only
+  // ever has one phone configuring the board at a time anyway.
+  WiFi.onEvent([](WiFiEvent_t event) {
+    if (event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) _forgetAllUnlockedIps();
+  });
+
   dns.start(53, "*", WiFi.softAPIP());
   server = new WebServer(80);
-  
+
   // Page principale
   server->on("/", HTTP_GET, []() {
     server->send_P(200, "text/html", HTML);
@@ -1869,6 +2063,7 @@ inline void init() {
     json += ",\"hardcap\":" + String(currentScore.hardcap);
     json += ",\"format\":" + String(currentScore.format);
     json += ",\"version\":\"" + String(FIRMWARE_VERSION) + "\"";
+    json += ",\"settingsLocked\":" + String(_getSettingsPin().length() > 0 ? "true" : "false");
     {
       const TeamNames::Names& n = TeamNames::get();
       json += ",\"teamA\":\""    + _jsonEscape(n.teamA)    + "\"";
@@ -1956,6 +2151,52 @@ inline void init() {
       if (id.length() > 0 && id.length() <= 31)
         WiFiMgr::setScoreboardId(id);
     }
+    server->send(200, "text/plain", "OK");
+  });
+
+  // Settings-tab password gate — check an attempt, or set/change/clear the pin.
+  server->on("/auth/settings", HTTP_POST, []() {
+    String attempt = server->hasArg("plain") ? server->arg("plain") : "";
+    String pin = _getSettingsPin();
+    if (pin.length() == 0 || attempt == pin) {
+      _rememberUnlockedIp((uint32_t)server->client().remoteIP());
+      server->send(200, "text/plain", "OK");
+    } else {
+      server->send(401, "text/plain", "Wrong password");
+    }
+  });
+
+  // Silent check the page runs on load, before ever prompting: if this IP
+  // already unlocked itself this session, skip the pin prompt with no
+  // password sent at all. See _rememberUnlockedIp's comment above for why
+  // this exists alongside (not instead of) the client-side localStorage
+  // remembering — this is the one that actually survives the OS's own
+  // captive-portal popup being closed and reopened.
+  server->on("/auth/settings/check", HTTP_GET, []() {
+    if (_isIpUnlocked((uint32_t)server->client().remoteIP())) server->send(200, "text/plain", "OK");
+    else server->send(401, "text/plain", "Locked");
+  });
+
+  server->on("/auth/setpin", HTTP_POST, []() {
+    if (!server->hasArg("plain")) { server->send(400, "text/plain", "Bad Request"); return; }
+    JsonDocument doc;
+    if (deserializeJson(doc, server->arg("plain"))) { server->send(400, "text/plain", "Bad Request"); return; }
+    String current = doc["current"] | "";
+    String newPin  = doc["pin"] | "";
+    String stored  = _getSettingsPin();
+    // A device that silently auto-unlocked via its remembered IP (see
+    // /auth/settings/check above) never learned the actual pin string client
+    // side, so it has nothing correct to send as "current" — but the server
+    // already vouches for it via _isIpUnlocked, which is exactly the same
+    // proof-of-knowledge an explicit correct "current" would have given
+    // (both ultimately trace back to this IP having typed the pin at some
+    // point). Accept either.
+    bool alreadyUnlocked = _isIpUnlocked((uint32_t)server->client().remoteIP());
+    if (stored.length() > 0 && current != stored && !alreadyUnlocked) { server->send(401, "text/plain", "Wrong current password"); return; }
+    if (newPin.length() > 20) { server->send(400, "text/plain", "Too long"); return; }
+    _setSettingsPin(newPin);
+    _forgetAllUnlockedIps();
+    if (newPin.length() > 0) _rememberUnlockedIp((uint32_t)server->client().remoteIP());
     server->send(200, "text/plain", "OK");
   });
 
@@ -2208,29 +2449,37 @@ inline void init() {
   });
 
   // Redirection captive portal
+  // Absolute Location (not just "/") — some OSes' captive-portal check uses a
+  // minimal embedded HTTP client that's stricter about resolving redirects
+  // than a normal browser and may ignore a relative one.
   server->onNotFound([]() {
-    server->sendHeader("Location", "/", true);
+    server->sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
     server->send(302, "text/plain", "");
   });
 
   // Routes spéciales pour détection captive portal Android/iOS
   server->on("/generate_204", HTTP_GET, []() {
-    server->sendHeader("Location", "/", true);
+    server->sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
     server->send(302, "text/plain", "");
   });
 
   server->on("/hotspot-detect.html", HTTP_GET, []() {
-    server->sendHeader("Location", "/", true);
+    server->sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
     server->send(302, "text/plain", "");
   });
 
   server->on("/canonical.html", HTTP_GET, []() {
-    server->sendHeader("Location", "/", true);
+    server->sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
     server->send(302, "text/plain", "");
   });
 
+  // Firefox/GNOME NetworkManager's check — the exact body "success" with 200
+  // is their sentinel for "real internet, no portal needed", which is the
+  // opposite of what we want here (this AP never has real internet for its
+  // clients), so redirect like every other check instead of serving it.
   server->on("/success.txt", HTTP_GET, []() {
-    server->send(200, "text/plain", "success");
+    server->sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
+    server->send(302, "text/plain", "");
   });
   
   server->begin();
