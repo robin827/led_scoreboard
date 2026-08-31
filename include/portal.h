@@ -22,6 +22,7 @@
 // Defined in main.cpp — forward declarations so the /mode route can manage the Firebase task
 extern TaskHandle_t firebaseTaskHandle;
 extern void firebaseTask(void*);
+extern volatile uint32_t firebaseLastHeartbeat;
 
 namespace Portal {
 
@@ -62,6 +63,12 @@ static void _handleOverlayUpload() {
 }
 static uint32_t   _offlineGraceStart = 0;
 static constexpr uint32_t OFFLINE_GRACE_MS = 5000;
+// firebaseTask normally loops every ~100ms (or returns to its top after at
+// most a bounded 30s error-backoff pause) — well under this. A gap this
+// long means the task is blocked inside a call that isn't returning on its
+// own (see firebaseLastHeartbeat's comment in main.cpp), so it's recycled
+// rather than left wedged forever.
+static constexpr uint32_t FIREBASE_STUCK_TIMEOUT_MS = 60000;
 
 // JSON string escaping for free-typed / externally-sourced fields embedded
 // into hand-built JSON strings (e.g. /status team/player names, /update/check
@@ -165,8 +172,12 @@ select.input option{background:var(--elem)}
 .network-signal{color:var(--accent);font-size:0.75rem}
 .network-form{display:none;padding:8px 12px 12px;gap:8px}
 .network-form.open{display:flex}
-.net-pass{flex:1;background:var(--card);border:1px solid var(--border);border-radius:6px;color:#fff;padding:8px 10px;font-size:0.85rem;outline:none}
+.net-pass-wrap,.pw-wrap{flex:1;position:relative;display:flex}
+.net-pass{flex:1;width:100%;background:var(--card);border:1px solid var(--border);border-radius:6px;color:#fff;padding:8px 34px 8px 10px;font-size:0.85rem;outline:none}
 .net-pass:focus{border-color:var(--a)}
+.pw-wrap .input{padding-right:34px}
+.net-pass-toggle,.pw-toggle{position:absolute;right:2px;top:50%;transform:translateY(-50%);background:none;border:none;padding:6px;margin:0;color:var(--accent);display:flex;align-items:center;cursor:pointer}
+.net-pass-toggle:hover,.pw-toggle:hover{color:#fff}
 .net-connect{padding:8px 14px;background:var(--a);color:var(--bg);border:none;border-radius:6px;font-size:0.85rem;font-weight:600;cursor:pointer;white-space:nowrap}
 .btn-scan{width:100%;margin-top:8px;padding:12px;background:var(--elem);color:var(--accent);font-size:0.85rem;border-radius:12px;display:flex;align-items:center;justify-content:center;gap:8px}
 .btn-scan:disabled{opacity:0.7;cursor:default}
@@ -381,18 +392,18 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
   <div class="settings" style="margin-top:12px">
     <div class="setting-group" style="margin-bottom:14px">
       <label class="setting-label">Team A</label>
-      <input type="text" class="input" id="teamA" maxlength="24" placeholder="Team A name" oninput="_teamsDirty=true" style="margin-bottom:8px">
+      <input type="text" class="input" id="teamA" maxlength="24" placeholder="Team A name" oninput="_teamsDirty=true" style="margin-bottom:8px" readonly onfocus="this.removeAttribute('readonly')">
       <div style="display:flex;gap:8px">
-        <input type="text" class="input" id="playerA1" maxlength="24" placeholder="Player 1" oninput="_teamsDirty=true">
-        <input type="text" class="input" id="playerA2" maxlength="24" placeholder="Player 2" oninput="_teamsDirty=true">
+        <input type="text" class="input" id="playerA1" maxlength="24" placeholder="Player 1" oninput="_teamsDirty=true" readonly onfocus="this.removeAttribute('readonly')">
+        <input type="text" class="input" id="playerA2" maxlength="24" placeholder="Player 2" oninput="_teamsDirty=true" readonly onfocus="this.removeAttribute('readonly')">
       </div>
     </div>
     <div class="setting-group" style="margin-bottom:0">
       <label class="setting-label">Team B</label>
-      <input type="text" class="input" id="teamB" maxlength="24" placeholder="Team B name" oninput="_teamsDirty=true" style="margin-bottom:8px">
+      <input type="text" class="input" id="teamB" maxlength="24" placeholder="Team B name" oninput="_teamsDirty=true" style="margin-bottom:8px" readonly onfocus="this.removeAttribute('readonly')">
       <div style="display:flex;gap:8px;margin-bottom:12px">
-        <input type="text" class="input" id="playerB1" maxlength="24" placeholder="Player 1" oninput="_teamsDirty=true">
-        <input type="text" class="input" id="playerB2" maxlength="24" placeholder="Player 2" oninput="_teamsDirty=true">
+        <input type="text" class="input" id="playerB1" maxlength="24" placeholder="Player 1" oninput="_teamsDirty=true" readonly onfocus="this.removeAttribute('readonly')">
+        <input type="text" class="input" id="playerB2" maxlength="24" placeholder="Player 2" oninput="_teamsDirty=true" readonly onfocus="this.removeAttribute('readonly')">
       </div>
       <button class="btn" style="width:100%;background:var(--a);color:var(--bg)" onclick="saveTeams()">Save Names</button>
       <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">Team names scroll across the LED panel before the match starts. Synced to the central server / Firebase when online.</div>
@@ -546,7 +557,10 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
   <div class="settings" style="margin-top:12px">
     <div class="setting-group" style="margin-bottom:0">
       <label class="setting-label">Settings Password</label>
-      <input type="password" class="input" id="pinNewInput" placeholder="New password (blank to remove)" style="margin-bottom:8px">
+      <div class="pw-wrap" style="margin-bottom:8px">
+        <input type="password" class="input" id="pinNewInput" placeholder="New password (blank to remove)">
+        <button type="button" class="pw-toggle" aria-label="Show password" onmousedown="event.preventDefault()" onclick="togglePwField('pinNewInput', this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+      </div>
       <button class="btn" style="width:100%;background:var(--elem);color:var(--accent)" onclick="saveSettingsPin()">Save Password</button>
       <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">When set, this is required to open this Settings tab from a fresh page load. Leave blank and save to remove protection.</div>
     </div>
@@ -627,7 +641,10 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
   <div class="modal">
     <div class="modal-title">Settings Locked</div>
     <div class="modal-desc">Enter the settings password to continue.</div>
-    <input type="password" class="input" id="pinInput" placeholder="Password" style="margin-bottom:10px" onkeydown="if(event.key==='Enter')submitPin()">
+    <div class="pw-wrap" style="margin-bottom:10px">
+      <input type="password" class="input" id="pinInput" placeholder="Password" onkeydown="if(event.key==='Enter')submitPin()">
+      <button type="button" class="pw-toggle" aria-label="Show password" onmousedown="event.preventDefault()" onclick="togglePwField('pinInput', this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+    </div>
     <div id="pinErr" style="display:none;color:var(--b);font-size:0.78rem;margin:-4px 0 14px"></div>
     <div class="modal-btns">
       <button class="modal-cancel" onclick="closePinPrompt()">Cancel</button>
@@ -1110,6 +1127,23 @@ async function setFirstServer(who) {
   try { await fetch('/serve/first', {method:'POST', body: String(who)}); refresh(); } catch(e) {}
 }
 
+const EYE_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
+// Shared show/hide toggle for the static password fields (settings PIN
+// set/unlock). onmousedown preventDefault keeps focus on the input so the
+// on-screen keyboard doesn't dismiss when the icon is tapped — see the
+// matching comment on the WiFi password toggle in scanWiFi().
+function togglePwField(id, btn) {
+  const inp = document.getElementById(id);
+  if (!inp) return;
+  const showing = inp.type === 'text';
+  inp.type = showing ? 'password' : 'text';
+  btn.innerHTML = showing ? EYE_ICON : EYE_OFF_ICON;
+  btn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+  inp.focus();
+}
+
 async function scanWiFi() {
   const btn = document.getElementById('btnScan');
   btn.disabled = true;
@@ -1138,11 +1172,33 @@ async function scanWiFi() {
       const form = document.createElement('div');
       form.className = 'network-form';
       if (net.secure) {
+        const wrap = document.createElement('div');
+        wrap.className = 'net-pass-wrap';
         const pw = document.createElement('input');
         pw.type = 'password';
         pw.placeholder = 'Password';
         pw.className = 'net-pass';
-        form.appendChild(pw);
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'net-pass-toggle';
+        toggle.setAttribute('aria-label', 'Show password');
+        toggle.innerHTML = EYE_ICON;
+        // mousedown fires before click and, left unhandled, blurs the
+        // password input first — dismissing the on-screen keyboard on
+        // mobile before the toggle's own click even runs. Preventing the
+        // default here keeps focus (and the keyboard) on the input.
+        toggle.addEventListener('mousedown', e => e.preventDefault());
+        toggle.addEventListener('click', e => {
+          e.stopPropagation();
+          const showing = pw.type === 'text';
+          pw.type = showing ? 'password' : 'text';
+          toggle.innerHTML = showing ? EYE_ICON : EYE_OFF_ICON;
+          toggle.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+          pw.focus();
+        });
+        wrap.appendChild(pw);
+        wrap.appendChild(toggle);
+        form.appendChild(wrap);
       }
       const cb = document.createElement('button');
       cb.className = 'net-connect';
@@ -1253,11 +1309,11 @@ async function setMode(m) {
   try { await fetch('/mode', {method:'POST', body: m}); refresh(); } catch(e) {}
 }
 
-// Populate channel select 1-23
+// Populate channel select 1-40
 (function(){
   const s = document.getElementById('fbChannel');
   if (!s) return;
-  for (let i = 1; i <= 23; i++) {
+  for (let i = 1; i <= 40; i++) {
     const o = document.createElement('option');
     o.value = String(i); o.textContent = 'Channel ' + i;
     s.appendChild(o);
@@ -2342,6 +2398,7 @@ inline void init() {
       WsClient::init(WsClient::loadServerIp());
     } else if (newMode == AppMode::FIREBASE) {
       Firebase::loadPollInterval();
+      firebaseLastHeartbeat = millis();
       xTaskCreatePinnedToCore(firebaseTask, "firebase", 8192, nullptr, 1, &firebaseTaskHandle, 0);
     }
 
@@ -2503,6 +2560,7 @@ inline void tick() {
     } else if (intended == AppMode::FIREBASE) {
       Mode::setEffective(AppMode::FIREBASE);
       Firebase::loadPollInterval();
+      firebaseLastHeartbeat = millis();
       xTaskCreatePinnedToCore(firebaseTask, "firebase", 8192, nullptr, 1, &firebaseTaskHandle, 0);
     }
   } else if (_serviceOnline && !online) {
@@ -2521,6 +2579,23 @@ inline void tick() {
     }
   } else {
     _offlineGraceStart = 0;  // online and stable — reset grace timer
+
+    // Watchdog: firebaseTask can wedge inside a blocking WiFiClientSecure
+    // connect/handshake that never returns (seen in practice on a fresh STA
+    // association, before ARP/routing has settled) — a manual mode-switch
+    // away and back recovers it purely because vTaskDelete unconditionally
+    // kills the task regardless of what it's blocked on, and a fresh task
+    // succeeds once the network path has warmed up. Automate that recovery
+    // instead of requiring a manual switch every time it happens.
+    if (Mode::isFirebase() && firebaseTaskHandle &&
+        (millis() - firebaseLastHeartbeat) >= FIREBASE_STUCK_TIMEOUT_MS) {
+      Serial.println("[Firebase] Task appears stuck — recycling");
+      vTaskDelete(firebaseTaskHandle);
+      firebaseTaskHandle = nullptr;
+      Firebase::loadPollInterval();
+      firebaseLastHeartbeat = millis();
+      xTaskCreatePinnedToCore(firebaseTask, "firebase", 8192, nullptr, 1, &firebaseTaskHandle, 0);
+    }
   }
 }
 

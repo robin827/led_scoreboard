@@ -17,6 +17,13 @@
 Score currentScore;
 SemaphoreHandle_t scoreMutex = NULL;
 TaskHandle_t firebaseTaskHandle = nullptr;
+// Updated at the top of every firebaseTask loop iteration, before any
+// potentially-blocking WiFi/HTTP call — lets Portal::tick() (Core 1) detect
+// a wedged task (e.g. a WiFiClientSecure connect/handshake that never
+// returns, which has been observed on ESP32 right after a fresh STA
+// association, before ARP/routing has fully settled) and recycle it, since
+// a task stuck inside a blocking call can't recover itself.
+volatile uint32_t firebaseLastHeartbeat = 0;
 
 // ── Firebase task (Core 0, Firebase mode only) ────────────────────────────────
 
@@ -54,6 +61,7 @@ void firebaseTask(void*) {
   String lastSeenRemoteTimerType = "";
 
   for (;;) {
+    firebaseLastHeartbeat = millis();
     WiFiMgr::tick();
 
     if (WiFiMgr::isOnline()) {
