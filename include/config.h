@@ -7,7 +7,7 @@
 // ── Firmware version & OTA manifest ──────────────────────────────────────────
 // Bump FIRMWARE_VERSION on every release; publish a matching manifest JSON at
 // MANIFEST_URL with the fields: { "version", "url", "notes" }
-#define FIRMWARE_VERSION  "1.5.0"
+#define FIRMWARE_VERSION  "1.6.0"
 #define MANIFEST_URL      "https://api.github.com/repos/robin827/led_scoreboard/releases/latest"
 
 // ── Scoreboard identity (used for AP name, ESP-NOW beacon, etc.) ──────────
@@ -15,7 +15,7 @@
 
 // ── WiFi Hotspot ──────────────────────────────────────────────────────────
 #define AP_SSID       SCOREBOARD_ID
-#define AP_PASSWORD   ""
+#define AP_PASSWORD   "roundnetfrance"
 
 // ── Firebase Realtime Database ────────────────────────────────────────────
 #define FIREBASE_DATABASE_URL     "https://live-scoreboard-fc0e5-default-rtdb.europe-west1.firebasedatabase.app"
