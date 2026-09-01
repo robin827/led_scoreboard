@@ -321,6 +321,22 @@ inline void stop() {
   Serial.println("[WS] Stopped");
 }
 
+// Forces an immediate reconnection attempt on the next tick() — used when the
+// portal saves a new server IP, so the board doesn't sit out whatever backoff
+// interval had already built up (up to RECONNECT_MAX) before trying the new
+// address, and doesn't keep talking to a still-open connection to the old one.
+// Safe to call mid-connect-attempt: _ws itself is only touched here when no
+// attempt is in flight on Core 0 (_connecting), since that task owns it then.
+inline void reconnectNow() {
+  if (!_connecting && _connected) {
+    _ws.close();
+    _connected = false;
+  }
+  _failCount     = 0;
+  _nextReconnect = RECONNECT_MS;
+  _lastAttempt   = millis() - RECONNECT_MS;
+}
+
 inline void init(const String& serverIp, uint16_t port = 8080) {
   _serverIp    = serverIp;
   _serverPort  = port;

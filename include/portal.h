@@ -2346,6 +2346,7 @@ inline void init() {
     ip.trim();
     WsClient::saveServerIp(ip);
     WsClient::init(ip);
+    WsClient::reconnectNow();
     server->send(200, "text/plain", "OK");
   });
 
