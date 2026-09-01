@@ -513,7 +513,7 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
       <label class="setting-label">Central Server <span id="wsStatus" class="status-badge status-offline">Disconnected</span></label>
       <div style="display:flex;gap:8px">
         <input type="text" class="input" id="serverIp" placeholder="e.g. 192.168.1.100" oninput="_serverIpDirty=true">
-        <button class="btn" style="background:var(--a);color:var(--bg);padding:12px 16px;font-size:0.85rem;white-space:nowrap;border-radius:8px" onclick="saveServerIp()">Save</button>
+        <button class="btn" style="background:var(--a);color:var(--bg);padding:12px 16px;font-size:0.85rem;white-space:nowrap;border-radius:8px" id="btnServerConnect" onclick="saveServerIp()">Connect</button>
       </div>
       <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">WebSocket server IP for central scoreboard management. Leave empty to disable.</div>
     </div>
@@ -850,6 +850,7 @@ async function refresh() {
       const ws = document.getElementById('wsStatus');
       ws.className = 'status-badge ' + (d.wsConnected ? 'status-online' : 'status-offline');
       ws.textContent = d.wsConnected ? 'Connected' : 'Disconnected';
+      if (d.wsConnected) _resetServerConnectBtn();
     }
     if (d.version !== undefined) {
       const fwCur = document.getElementById('fwCur');
@@ -1267,9 +1268,29 @@ function setBrightness(val) {
   }, 300);
 }
 
+let _serverConnectTimer = null;
+function _resetServerConnectBtn() {
+  clearTimeout(_serverConnectTimer);
+  const btn = document.getElementById('btnServerConnect');
+  btn.disabled = false;
+  btn.style.display = '';
+  btn.innerHTML = 'Connect';
+}
 async function saveServerIp() {
   const val = document.getElementById('serverIp').value.trim();
+  const btn = document.getElementById('btnServerConnect');
+  btn.disabled = true;
+  btn.style.display = 'inline-flex';
+  btn.style.alignItems = 'center';
+  btn.style.gap = '6px';
+  btn.innerHTML = '<div class="spinner"></div>Connecting…';
   try { await fetch('/serverip', {method:'POST', body: val}); _serverIpDirty = false; } catch(e) {}
+  // The board connects in the background — wait for the next /status poll to
+  // report wsConnected (see _resetServerConnectBtn above), but don't leave
+  // the button stuck showing "Connecting..." forever if the IP is wrong or
+  // unreachable.
+  clearTimeout(_serverConnectTimer);
+  _serverConnectTimer = setTimeout(_resetServerConnectBtn, 10000);
 }
 
 async function saveTeams() {
