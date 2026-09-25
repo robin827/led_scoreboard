@@ -494,6 +494,45 @@ inline void showMedicalTimer(uint32_t remainingMs) {
   FastLED.show();
 }
 
+// ─── Pre-match "SERVE?" prompt ───────────────────────────────────────────────
+// Shown after a pedal press on the team-name marquee, until a side is picked
+// (see ScoreActions::_serverSelectActive). "SERVE?" on top, then an A (team A
+// colour) and B (team B colour) breathing in opposite phase underneath, each
+// on its own team's side of the panel.
+
+static const uint8_t _TG_S[5][3] = {{1,1,1},{1,0,0},{1,1,1},{0,0,1},{1,1,1}};
+static const uint8_t _TG_R[5][3] = {{1,1,0},{1,0,1},{1,1,0},{1,0,1},{1,0,1}};
+static const uint8_t _TG_V[5][3] = {{1,0,1},{1,0,1},{1,0,1},{1,0,1},{0,1,0}};
+static const uint8_t _TG_Q[5][3] = {{1,1,1},{0,0,1},{0,1,1},{0,0,0},{0,1,0}};
+static const uint8_t _TG_B[5][3] = {{1,1,0},{1,0,1},{1,1,0},{1,0,1},{1,1,0}};
+
+inline void _drawGlyph3x5(const uint8_t (*g)[3], int sx, int sy, CRGB col) {
+  for (int gy = 0; gy < 5; gy++)
+    for (int gx = 0; gx < 3; gx++)
+      if (g[gy][gx]) {
+        int px = sx + gx, py = sy + gy;
+        if (px >= 0 && px < (int)Config::NUM_COLS && py >= 0 && py < (int)(Config::NUM_ROWS + 4))
+          _leds[xy(px, py)] = col;
+      }
+}
+
+inline void showServerPrompt() {
+  _timerMode = true;
+  FastLED.clear();
+
+  const uint8_t (*msg[6])[3] = {_TG_S,_TG_E,_TG_R,_TG_V,_TG_E,_TG_Q};
+  static const CRGB TEXT_COL = CRGB(200, 200, 200);
+  for (int i = 0; i < 6; i++) _drawGlyph3x5(msg[i], 1 + i * 4, 1, TEXT_COL);
+
+  uint8_t b = _breatheFactor();
+  CRGB colA = COLOR_A; colA.nscale8(qadd8(b, 40));
+  CRGB colB = COLOR_B; colB.nscale8(qadd8(255 - b, 40));
+  _drawGlyph3x5(_TG_A, 5,  (int)Config::NUM_ROWS - 1, colA);
+  _drawGlyph3x5(_TG_B, 16, (int)Config::NUM_ROWS - 1, colB);
+
+  FastLED.show();
+}
+
 // ─── Pre-match team-name marquee ─────────────────────────────────────────────
 // Full-panel scrolling takeover shown whenever the match hasn't started yet
 // (score 0-0, no sets played) and at least one team name is configured.
@@ -514,11 +553,12 @@ inline void showTeamIntro(const TeamNames::Names& n) {
   int rightLen = (int)strlen(right);
 
   static constexpr int CHAR_W = 6;  // 5px glyph + 1px gap
-  static constexpr int GAP_W  = 12; // gap between loop repeats
   static constexpr uint32_t SPEED_PX_PER_SEC = 20;
 
-  int textW = (leftLen + sepLen + rightLen) * CHAR_W;
-  int loopW = textW + GAP_W;
+  // One loop = "A VS B VS " — the trailing separator joins B back to the
+  // next repeat of A, so "VS" shows between the names in both directions.
+  int textW = (leftLen + sepLen + rightLen + sepLen) * CHAR_W;
+  int loopW = textW;
 
   const int COLS = (int)Config::NUM_COLS;
   const int Y    = 2; // vertically centered in the 12-row extended canvas (rows 2..8)
@@ -533,6 +573,7 @@ inline void showTeamIntro(const TeamNames::Names& n) {
     for (int i = 0; i < leftLen;  i++) { drawChar5x7(left[i],  cx, Y, COLOR_A);   cx += CHAR_W; }
     for (int i = 0; i < sepLen;   i++) { drawChar5x7(SEP[i],   cx, Y, SEP_COLOR); cx += CHAR_W; }
     for (int i = 0; i < rightLen; i++) { drawChar5x7(right[i], cx, Y, COLOR_B);   cx += CHAR_W; }
+    for (int i = 0; i < sepLen;   i++) { drawChar5x7(SEP[i],   cx, Y, SEP_COLOR); cx += CHAR_W; }
   }
 
   FastLED.show();

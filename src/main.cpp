@@ -59,6 +59,13 @@ void firebaseTask(void*) {
   // against, so no special force-write-first sentinel is needed here.
   String lastWrittenTimerType    = "";
   String lastSeenRemoteTimerType = "";
+  // True from boot and after every WiFi drop, until the first successful
+  // score/timer read after (re)connecting. A set change or a running "break"
+  // seen on that first read happened at some unknown point while we were
+  // offline — the board can't know how much of the break is left, so it just
+  // shows the score instead of starting a fresh 3-minute countdown.
+  bool freshScoreRead = true;
+  bool freshTimerRead = true;
 
   for (;;) {
     firebaseLastHeartbeat = millis();
@@ -156,7 +163,8 @@ void firebaseTask(void*) {
               db.hardcap     != lastWritten.hardcap      || db.format     != lastWritten.format) {
 
             // Detect set change (active set number increased)
-            bool setJustEnded = (db.setA + db.setB) > (lastWritten.setA + lastWritten.setB);
+            bool setJustEnded = !freshScoreRead &&
+                                (db.setA + db.setB) > (lastWritten.setA + lastWritten.setB);
 
             // Detect rotation: check if score total crossed a multiple-of-4+3 threshold
             if (!setJustEnded) {
@@ -178,6 +186,7 @@ void firebaseTask(void*) {
             lastWrittenFmt = db.format;
             lastWrittenFS  = db.firstServer;
           }
+          freshScoreRead = false;
         } else {
           consecutiveErrors++;
           Serial.printf("[Firebase] Error %d/%d\n", consecutiveErrors, MAX_ERRORS);
@@ -211,15 +220,23 @@ void firebaseTask(void*) {
         // never wipes a timer we're about to (re)apply right here.
         String remoteTimerType;
         if (Firebase::readTimerState(remoteTimerType)) {
-          if (remoteTimerType != lastSeenRemoteTimerType) {
+          if (freshTimerRead && remoteTimerType == "break" && !ScoreActions::isBreakTimerActive()) {
+            // Stale/unknown-age break (see freshScoreRead): don't start it
+            // here, and don't clear it in Firebase either — just remember it
+            // as seen so later polls don't pick it up as a new change.
+            lastSeenRemoteTimerType = remoteTimerType;
+          } else if (remoteTimerType != lastSeenRemoteTimerType) {
             ScoreActions::apply(remoteTimerType.length() > 0 ? remoteTimerType.c_str() : "stoptimer");
             lastSeenRemoteTimerType = remoteTimerType;
             lastWrittenTimerType    = remoteTimerType;
           }
+          freshTimerRead = false;
         }
       }
     } else {
       consecutiveErrors = 0;
+      freshScoreRead = true;
+      freshTimerRead = true;
     }
 
     vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -373,13 +390,53 @@ void loop() {
   // Whenever "first server" changes (portal tap, pedal a/long|b/long, or a
   // central "set_serving" command) while pre-match, hold off the marquee for
   // a few seconds so the operator can actually see the serve indicator change.
+  // A server picked from somewhere else also answers a pending "SERVE?" prompt.
   if (curFirstServer != lastFirstServer) {
     lastFirstServer = curFirstServer;
     introResumeAt    = millis() + INTRO_RESUME_DELAY_MS;
+    ScoreActions::cancelServerSelect();
   }
 
-  bool introActive = !timeoutActive && !medicalActive && !timerActive && TeamNames::hasAnyTeamName() &&
+  // The marquee stays dismissed (after a server was picked from the "SERVE?"
+  // prompt) until a new match shows up: a reset (handled in apply()), new
+  // team names, or the score going back to fresh after a completed set.
+  static TeamNames::Names lastNames = TeamNames::get();
+  const TeamNames::Names& curNames = TeamNames::get();
+  if (strcmp(curNames.teamA, lastNames.teamA) != 0 || strcmp(curNames.teamB, lastNames.teamB) != 0) {
+    lastNames = curNames;
+    ScoreActions::clearIntroDismissed();
+  }
+  if (!matchNotStarted) {
+    ScoreActions::cancelServerSelect();
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    bool anySetPlayed = (currentScore.setA + currentScore.setB) > 0;
+    xSemaphoreGive(scoreMutex);
+    if (anySetPlayed) ScoreActions::clearIntroDismissed();
+  }
+
+  ScoreActions::tickServerSelect();
+  static bool prevServerSelect = false;
+  bool serverSelect = !timeoutActive && !medicalActive && !timerActive && ScoreActions::isServerSelectActive();
+  if (serverSelect) {
+    static uint32_t lastPromptUpdate = 0;
+    uint32_t now = millis();
+    if (now - lastPromptUpdate >= 33) {
+      lastPromptUpdate = now;
+      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      LED::showServerPrompt();
+      xSemaphoreGive(scoreMutex);
+    }
+  } else if (prevServerSelect) {
+    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    LED::update(currentScore);
+    xSemaphoreGive(scoreMutex);
+  }
+  prevServerSelect = serverSelect;
+
+  bool introActive = !timeoutActive && !medicalActive && !timerActive && !serverSelect &&
+                      !ScoreActions::isIntroDismissed() && TeamNames::hasAnyTeamName() &&
                       matchNotStarted && (int32_t)(millis() - introResumeAt) >= 0;
+  ScoreActions::setIntroShowing(introActive);
 
   if (introActive) {
     uint32_t now = millis();
@@ -389,7 +446,7 @@ void loop() {
       LED::showTeamIntro(TeamNames::get());
       xSemaphoreGive(scoreMutex);
     }
-  } else if (prevIntroActive) {
+  } else if (prevIntroActive && !serverSelect) {
     xSemaphoreTake(scoreMutex, portMAX_DELAY);
     LED::update(currentScore);
     xSemaphoreGive(scoreMutex);

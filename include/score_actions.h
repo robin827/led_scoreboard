@@ -26,6 +26,18 @@ static bool            _dimActive           = false;
 static volatile bool   _wantsWake           = false;
 static uint8_t         _preSleepBrightness  = 100;
 
+// Pre-match flow: team-name marquee → "SERVE?" prompt → 0-0.
+// _introShowing is published by main.cpp's loop (the only place that decides
+// whether the marquee is on screen); any pedal press while it's true opens
+// the server prompt instead of scoring. Picking a side closes the prompt and
+// sets _introDismissed so the marquee doesn't come back over the 0-0 screen —
+// cleared again by "reset" (or by main.cpp when a new match is detected).
+static volatile bool _introShowing       = false;
+static volatile bool _introDismissed     = false;
+static volatile bool _serverSelectActive = false;
+static volatile uint32_t _serverSelectStartMs = 0;
+static constexpr uint32_t SERVER_SELECT_TIMEOUT_MS = 30UL * 1000UL;
+
 static constexpr uint32_t BREAK_DURATION_MS    = 3UL * 60UL * 1000UL;
 static constexpr uint32_t TIMEOUT_COUNTDOWN_MS = 60UL * 1000UL;
 static constexpr uint32_t MEDICAL_DURATION_MS  = 5UL * 60UL * 1000UL;
@@ -79,6 +91,29 @@ inline void tickBatterySaver() {
     _preSleepBrightness = LED::getBrightness();
     _dimActive = true;
   }
+}
+
+inline void setIntroShowing(bool v)     { _introShowing = v; }
+inline bool isIntroDismissed()          { return _introDismissed; }
+inline void clearIntroDismissed()       { _introDismissed = false; }
+inline bool isServerSelectActive()      { return _serverSelectActive; }
+inline void cancelServerSelect()        { _serverSelectActive = false; }
+
+// No side picked within SERVER_SELECT_TIMEOUT_MS: close the "SERVE?" prompt
+// and bring the team-name marquee back. Called from main.cpp's loop.
+inline void tickServerSelect() {
+  if (_serverSelectActive && millis() - _serverSelectStartMs >= SERVER_SELECT_TIMEOUT_MS) {
+    _serverSelectActive = false;
+    _introDismissed     = false;
+  }
+}
+
+// Physical pedal presses only (a|b / single|double|long). Portal/webapp use
+// a/inc, a/dec etc., which keep scoring directly even during the marquee.
+inline bool _isPedalPress(const char* cmd, bool& teamA) {
+  if (strcmp(cmd, "a/single") == 0 || strcmp(cmd, "a/double") == 0 || strcmp(cmd, "a/long") == 0) { teamA = true;  return true; }
+  if (strcmp(cmd, "b/single") == 0 || strcmp(cmd, "b/double") == 0 || strcmp(cmd, "b/long") == 0) { teamA = false; return true; }
+  return false;
 }
 
 inline void     triggerRotation()     { _rotationCount++; }
@@ -216,6 +251,29 @@ inline bool apply(const char* cmd) {
       xSemaphoreGive(scoreMutex);
       return true;
     }
+  }
+
+  // Pre-match server selection (see _introShowing above).
+  bool pedalTeamA = false;
+  bool isPedal = _isPedalPress(cmd, pedalTeamA);
+  if (isPedal && _serverSelectActive) {
+    _serverSelectActive = false;
+    currentScore.firstServer = pedalTeamA ? 0 : 1;
+    LED::update(currentScore);
+    xSemaphoreGive(scoreMutex);
+    return true;
+  }
+  if (isPedal && _introShowing) {
+    _introShowing       = false;
+    _introDismissed     = true;
+    _serverSelectActive = true;
+    _serverSelectStartMs = millis();
+    xSemaphoreGive(scoreMutex);
+    return true;
+  }
+  if (strcmp(cmd, "reset") == 0) {
+    _serverSelectActive = false;
+    _introDismissed     = false;
   }
 
   bool changed = true;
