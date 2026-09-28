@@ -99,6 +99,15 @@ inline void clearIntroDismissed()       { _introDismissed = false; }
 inline bool isServerSelectActive()      { return _serverSelectActive; }
 inline void cancelServerSelect()        { _serverSelectActive = false; }
 
+// Opens the "SERVE?" prompt outside the pre-match intro flow — used when the
+// break timer between sets ends (main.cpp's loop) so the next set also gets
+// an explicit server pick instead of silently carrying over whichever team
+// served the set that just finished.
+inline void startServerSelect() {
+  _serverSelectActive  = true;
+  _serverSelectStartMs = millis();
+}
+
 // No side picked within SERVER_SELECT_TIMEOUT_MS: close the "SERVE?" prompt
 // and bring the team-name marquee back. Called from main.cpp's loop.
 inline void tickServerSelect() {

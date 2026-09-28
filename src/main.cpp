@@ -479,9 +479,24 @@ void loop() {
       SCORE_UNLOCK();
     }
   } else if (prevTimerActive && !timeoutActive && !medicalActive) {
+    // The break between sets just ended (naturally, or cancelled early by a
+    // score command) — if we're sitting at 0-0 with at least one set already
+    // played, ask who serves the new set instead of silently carrying over
+    // whichever team served the set that just finished. A break started for
+    // some other reason (or one that outlives its set, e.g. cancelled after
+    // points were already on the board) just falls back to the scoreboard,
+    // same as before.
     SCORE_LOCK();
-    LED::update(currentScore);
+    bool betweenSets = (currentScore.scoreA == 0 && currentScore.scoreB == 0 &&
+                         (currentScore.setA + currentScore.setB) > 0);
     SCORE_UNLOCK();
+    if (betweenSets) {
+      ScoreActions::startServerSelect();
+    } else {
+      SCORE_LOCK();
+      LED::update(currentScore);
+      SCORE_UNLOCK();
+    }
   }
   prevTimerActive = timerActive;
 
@@ -516,7 +531,17 @@ void loop() {
     lastNames = curNames;
     ScoreActions::clearIntroDismissed();
   }
-  if (!matchNotStarted) {
+  // Cancel any lingering "SERVE?" prompt once the current set actually has a
+  // point on the board — e.g. the operator scored from the portal (not a
+  // pedal press, so it never answers the prompt directly) instead of picking
+  // a server. Deliberately keyed on the CURRENT set's score, not "has any
+  // set been played" (matchNotStarted) — the latter would also cover the
+  // 0-0-between-sets window the prompt is now meant to cover too, and would
+  // cancel it the instant it opened.
+  SCORE_LOCK();
+  bool curSetScored = (currentScore.scoreA + currentScore.scoreB) > 0;
+  SCORE_UNLOCK();
+  if (curSetScored) {
     ScoreActions::cancelServerSelect();
     SCORE_LOCK();
     bool anySetPlayed = (currentScore.setA + currentScore.setB) > 0;
