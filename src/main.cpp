@@ -236,10 +236,19 @@ static void _firebaseRun() {
         String remoteTimerType;
         FD_MARK("Firebase::readTimerState");
         if (Firebase::readTimerState(remoteTimerType)) {
-          if (freshTimerRead && remoteTimerType == "break" && !ScoreActions::isBreakTimerActive()) {
-            // Stale/unknown-age break (see freshScoreRead): don't start it
-            // here, and don't clear it in Firebase either — just remember it
-            // as seen so later polls don't pick it up as a new change.
+          // Stale/unknown-age timer (see freshScoreRead): any of break/
+          // timeout/medical seen on the first read after (re)connect gets
+          // the same treatment, not just break - a lingering "timeout" or
+          // "medical" left running by another writer used to fire instantly
+          // on connect since only "break" was ever checked here.
+          bool alreadyRunningLocally =
+              (remoteTimerType == "break"   && ScoreActions::isBreakTimerActive()) ||
+              (remoteTimerType == "timeout" && ScoreActions::isTimeoutActive())    ||
+              (remoteTimerType == "medical" && ScoreActions::isMedicalActive());
+          if (freshTimerRead && remoteTimerType.length() > 0 && !alreadyRunningLocally) {
+            // Don't start it here, and don't clear it in Firebase either -
+            // just remember it as seen so later polls don't pick it up as a
+            // new change.
             lastSeenRemoteTimerType = remoteTimerType;
           } else if (remoteTimerType != lastSeenRemoteTimerType) {
             ScoreActions::apply(remoteTimerType.length() > 0 ? remoteTimerType.c_str() : "stoptimer");
