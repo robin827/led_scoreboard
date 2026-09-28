@@ -18,6 +18,15 @@ static volatile bool     _timeoutActive    = false;
 static volatile uint32_t _timeoutStartMs   = 0;
 static volatile bool     _medicalActive    = false;
 static volatile uint32_t _medicalStartMs   = 0;
+// Whether the currently-running (or most recently run) break was started by
+// an actual pedal long-press, as opposed to the portal's "Next Set" button
+// or a remote/Firebase/CENTRAL-synced set change. Set wherever a break
+// starts (see startBreakTimer(), applyTimerWithElapsed(), apply()'s "break"
+// and didNextSet handling), read once at break-end (main.cpp) to decide
+// whether the between-sets "SERVE?" prompt is worth showing — no pedal in
+// use means nothing will ever press it, so skip it and go straight to the
+// scoreboard, same as a non-pedal match already does pre-match.
+static volatile bool     _breakIsPedalDriven = false;
 
 // Battery saver
 static volatile uint32_t _lastActivityMs   = 0;
@@ -127,7 +136,10 @@ inline bool _isPedalPress(const char* cmd, bool& teamA) {
 
 inline void     triggerRotation()     { _rotationCount++; }
 inline uint32_t getRotationCount()    { return _rotationCount; }
-inline void     startBreakTimer()     { _timerActive = true; _timerStartMs = millis(); }
+// Only called for a remote/Firebase-detected set change (main.cpp) — never
+// pedal-driven, see _breakIsPedalDriven above.
+inline void     startBreakTimer()     { _timerActive = true; _timerStartMs = millis(); _breakIsPedalDriven = false; }
+inline bool     isBreakPedalDriven()  { return _breakIsPedalDriven; }
 
 inline bool isBreakTimerActive() { return _timerActive; }
 inline uint32_t breakTimerRemainingMs() {
@@ -182,7 +194,7 @@ inline void applyTimerWithElapsed(const char* type, uint32_t elapsedMs) {
   uint32_t startMs = (elapsedMs < millis()) ? (millis() - elapsedMs) : 0;
   if (strcmp(type, "timeout") == 0)      { _timeoutActive = true; _timeoutStartMs = startMs; }
   else if (strcmp(type, "medical") == 0) { _medicalActive = true; _medicalStartMs = startMs; }
-  else if (strcmp(type, "break") == 0)   { _timerActive   = true; _timerStartMs   = startMs; }
+  else if (strcmp(type, "break") == 0)   { _timerActive   = true; _timerStartMs   = startMs; _breakIsPedalDriven = false; }
   LED::update(currentScore);
   SCORE_UNLOCK();
 }
@@ -218,6 +230,10 @@ inline bool apply(const char* cmd) {
     _medicalActive  = false;
     _timerActive    = true;
     _timerStartMs   = millis();
+    // The portal's manual break button and every relayed CENTRAL/remote
+    // "break" command land here — never a pedal command (see
+    // _isPedalPress()), so this is never pedal-driven.
+    _breakIsPedalDriven = false;
     SCORE_UNLOCK();
     return true;
   }
@@ -347,6 +363,11 @@ inline bool apply(const char* cmd) {
     if (startTimer) {
       _timerActive  = true;
       _timerStartMs = millis();
+      // isPedal is only true for an actual a/long|b/long press — the
+      // portal's "Next Set" button sends the plain "nextset" string, which
+      // isn't a pedal command (see _isPedalPress()), so this correctly comes
+      // out false for a portal-driven set transition.
+      _breakIsPedalDriven = isPedal;
     }
   }
 

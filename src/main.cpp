@@ -481,16 +481,18 @@ void loop() {
   } else if (prevTimerActive && !timeoutActive && !medicalActive) {
     // The break between sets just ended (naturally, or cancelled early by a
     // score command) — if we're sitting at 0-0 with at least one set already
-    // played, ask who serves the new set instead of silently carrying over
-    // whichever team served the set that just finished. A break started for
-    // some other reason (or one that outlives its set, e.g. cancelled after
-    // points were already on the board) just falls back to the scoreboard,
+    // played AND that set was actually played with the pedal (see
+    // isBreakPedalDriven — a portal/remote-only match has no pedal to press
+    // to answer the prompt, so it would just sit there for nothing), ask who
+    // serves the new set instead of silently carrying over whichever team
+    // served the set that just finished. Anything else (no pedal in use, or
+    // a break started for some other reason) falls back to the scoreboard,
     // same as before.
     SCORE_LOCK();
     bool betweenSets = (currentScore.scoreA == 0 && currentScore.scoreB == 0 &&
                          (currentScore.setA + currentScore.setB) > 0);
     SCORE_UNLOCK();
-    if (betweenSets) {
+    if (betweenSets && ScoreActions::isBreakPedalDriven()) {
       ScoreActions::startServerSelect();
     } else {
       SCORE_LOCK();
