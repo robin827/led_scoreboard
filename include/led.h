@@ -5,6 +5,7 @@
 #pragma once
 #include <Arduino.h>
 #include <FastLED.h>
+#include "freeze_debug.h"
 #include <Preferences.h>
 #include "config.h"
 #include "score.h"
@@ -268,7 +269,7 @@ inline void init() {
 
   FastLED.setBrightness(brightness);
   FastLED.clear();
-  FastLED.show();
+  FD_SHOW();
   Serial.printf("[LED] Init: 24x8, brightness=%d\n", brightness);
 }
 
@@ -283,7 +284,7 @@ inline void bootAnimation() {
   // Brief white spark at center before explosion
   FastLED.clear();
   _leds[xy((int)roundf(cx), (int)roundf(cy))] = CRGB::White;
-  FastLED.show();
+  FD_SHOW();
   delay(80);
 
   const int   STEPS     = 35;
@@ -309,24 +310,24 @@ inline void bootAnimation() {
         }
       }
     }
-    FastLED.show();
+    FD_SHOW();
     delay(22);
   }
 
   for (int step = 0; step < 20; step++) {
     for (int i = 0; i < TOTAL_LEDS; i++) _leds[i].nscale8(195);
-    FastLED.show();
+    FD_SHOW();
     delay(18);
   }
 
   FastLED.clear();
-  FastLED.show();
+  FD_SHOW();
 }
 
 inline void setBrightness(uint8_t brightness) {
   brightness = constrain(brightness, 1, 255);
   FastLED.setBrightness(brightness);
-  FastLED.show();
+  FD_SHOW();
   _prefs.begin("led", false);
   _prefs.putUChar("brightness", brightness);
   _prefs.end();
@@ -337,15 +338,41 @@ inline uint8_t getBrightness() { return FastLED.getBrightness(); }
 
 inline void setRawBrightness(uint8_t brightness) {
   FastLED.setBrightness(constrain(brightness, 1, 255));
-  FastLED.show();
+  FD_SHOW();
 }
 
+// Set when update() is called off Core 1 — see update().
+static volatile bool _redrawPending = false;
+
+// Every LED function here must only ever run on Core 1 (the loop task).
+// FastLED.show() is not safe to call from both cores at once: two
+// overlapping transmissions leave one of them waiting forever for an RMT
+// "done" signal — the tournament "frozen LEDs" bug (reproduced + confirmed
+// 2026-09-28 with freeze_debug.h: 9/9 freezes had both cores inside show(),
+// or Core 0 stuck in show() holding scoreMutex while loop() waited on it).
+// update() is the only one with Core 0 callers — ScoreActions::apply() /
+// applyFromDatabase(), reached from firebaseTask and ESP-NOW callbacks — so
+// off Core 1 it just flags a redraw, which loop() performs a few ms later
+// via takePendingRedraw(). Those callers always pass currentScore, which is
+// exactly what loop() redraws from.
 inline void update(const Score& score) {
+  if (xPortGetCoreID() != ARDUINO_RUNNING_CORE) {
+    _redrawPending = true;
+    return;
+  }
+  _redrawPending = false;
   _animScore = score;
   _timerMode = false;
   FastLED.clear();
   _updateSmall(score, _breatheFactor());
-  FastLED.show();
+  FD_SHOW();
+}
+
+// loop() only: true once if an off-core update() asked for a redraw.
+inline bool takePendingRedraw() {
+  if (!_redrawPending) return false;
+  _redrawPending = false;
+  return true;
 }
 
 // Call from main loop at ~30 fps to animate serve pixels
@@ -356,7 +383,7 @@ inline void tick() {
   if (_timerMode) return;
   _applyServeSmall(_animScore, _breatheFactor());
   if (_isRotationPoint(_animScore)) _drawRotationLoop();
-  FastLED.show();
+  FD_SHOW();
 }
 
 // Sleep animation: 4 LEDs centred (cols 10-13, row 5), yellow→cyan travelling wave
@@ -375,7 +402,7 @@ inline void showSleepAnimation() {
     col.nscale8(b);
     _leds[xy(10 + i, 5)] = col;
   }
-  FastLED.show();
+  FD_SHOW();
 }
 
 // Break timer: M:SS with set badges
@@ -393,7 +420,7 @@ inline void showBreakTimer(uint32_t remainingMs, bool colonOn) {
   drawDigit(secs % 10, 18, 0, col);
   drawSetDigitSm(_animScore.setA, 5,  Config::NUM_ROWS, COLOR_A);
   drawSetDigitSm(_animScore.setB, 16, Config::NUM_ROWS, COLOR_B);
-  FastLED.show();
+  FD_SHOW();
 }
 
 // ─── Timeout display ─────────────────────────────────────────────────────────
@@ -443,7 +470,7 @@ inline void showTimeoutDisplay(uint32_t remainingMs) {
         }
     }
   }
-  FastLED.show();
+  FD_SHOW();
 }
 
 // ─── Medical timer display ────────────────────────────────────────────────────
@@ -491,7 +518,7 @@ inline void showMedicalTimer(uint32_t remainingMs) {
         }
     }
   }
-  FastLED.show();
+  FD_SHOW();
 }
 
 // ─── Pre-match "SERVE?" prompt ───────────────────────────────────────────────
@@ -530,7 +557,7 @@ inline void showServerPrompt() {
   _drawGlyph3x5(_TG_A, 5,  (int)Config::NUM_ROWS - 1, colA);
   _drawGlyph3x5(_TG_B, 16, (int)Config::NUM_ROWS - 1, colB);
 
-  FastLED.show();
+  FD_SHOW();
 }
 
 // ─── Pre-match team-name marquee ─────────────────────────────────────────────
@@ -576,7 +603,7 @@ inline void showTeamIntro(const TeamNames::Names& n) {
     for (int i = 0; i < sepLen;   i++) { drawChar5x7(SEP[i],   cx, Y, SEP_COLOR); cx += CHAR_W; }
   }
 
-  FastLED.show();
+  FD_SHOW();
 }
 
 } // namespace LED

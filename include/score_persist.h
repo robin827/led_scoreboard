@@ -56,9 +56,9 @@ inline void _writeSnapshot(const Score& s) {
 // Takes scoreMutex itself, snapshots currentScore, and persists it. Safe to
 // call from anywhere that is NOT already holding scoreMutex.
 inline void persistNow() {
-  xSemaphoreTake(scoreMutex, portMAX_DELAY);
+  SCORE_LOCK();
   Score snapshot = currentScore;
-  xSemaphoreGive(scoreMutex);
+  SCORE_UNLOCK();
   _writeSnapshot(snapshot);
 }
 
@@ -77,9 +77,9 @@ inline void persistNowLocked() {
 // once per PERSIST_INTERVAL_MS so a flurry of quick points coalesces into
 // one write instead of one per point.
 inline void tick() {
-  xSemaphoreTake(scoreMutex, portMAX_DELAY);
+  SCORE_LOCK();
   Score cur = currentScore;
-  xSemaphoreGive(scoreMutex);
+  SCORE_UNLOCK();
 
   if (memcmp(&cur, &_lastPersisted, sizeof(Score)) == 0) return;
   if (millis() - _lastPersistMs < PERSIST_INTERVAL_MS) return;
@@ -102,9 +102,9 @@ inline bool load() {
 
   if (got != sizeof(Score)) return false;
 
-  xSemaphoreTake(scoreMutex, portMAX_DELAY);
+  SCORE_LOCK();
   currentScore = restored;
-  xSemaphoreGive(scoreMutex);
+  SCORE_UNLOCK();
 
   _lastPersisted = restored;
   _lastPersistMs = millis();

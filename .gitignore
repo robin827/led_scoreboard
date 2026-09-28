@@ -4,3 +4,6 @@
 .vscode/launch.json
 .vscode/ipch
 .claude/settings.local.json
+
+# Serial monitor logs (pio device monitor -f log2file)
+logs/

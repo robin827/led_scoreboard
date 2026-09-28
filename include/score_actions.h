@@ -80,9 +80,9 @@ inline void tickBatterySaver() {
     Serial.println("[BATSAVER] waking — notifyActivity() fired while asleep");
     _wantsWake = false;
     _dimActive = false;
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     return;
   }
   if (_dimTimeoutSec == 0 || _dimActive) return;
@@ -158,18 +158,18 @@ inline const char* activeTimerType() {
 // Apply a score state received from Firebase — cancels break/timeout timers, updates display
 inline void applyFromDatabase(const Score& db) {
   notifyActivity();
-  xSemaphoreTake(scoreMutex, portMAX_DELAY);
+  SCORE_LOCK();
   _timerActive   = false;
   _timeoutActive = false;
   _medicalActive = false;
   currentScore = db;
   LED::update(currentScore);
-  xSemaphoreGive(scoreMutex);
+  SCORE_UNLOCK();
 }
 
 inline bool apply(const char* cmd) {
   notifyActivity();
-  xSemaphoreTake(scoreMutex, portMAX_DELAY);
+  SCORE_LOCK();
 
   // Timer commands (timeout/break/medical) are mutually exclusive — starting
   // one always cancels whichever of the other two was running.
@@ -178,7 +178,7 @@ inline bool apply(const char* cmd) {
     _medicalActive  = false;
     _timeoutActive  = true;
     _timeoutStartMs = millis();
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     return true;
   }
   if (strcmp(cmd, "break") == 0) {
@@ -186,7 +186,7 @@ inline bool apply(const char* cmd) {
     _medicalActive  = false;
     _timerActive    = true;
     _timerStartMs   = millis();
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     return true;
   }
   if (strcmp(cmd, "medical") == 0) {
@@ -194,7 +194,7 @@ inline bool apply(const char* cmd) {
     _timeoutActive  = false;
     _medicalActive  = true;
     _medicalStartMs = millis();
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     return true;
   }
 
@@ -208,7 +208,7 @@ inline bool apply(const char* cmd) {
     _timeoutActive  = false;
     _medicalActive  = false;
     if (wasActive) LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     return wasActive;
   }
 
@@ -219,7 +219,7 @@ inline bool apply(const char* cmd) {
       strcmp(cmd, "nextset") == 0 ||
       strcmp(cmd, "reset")   == 0;
   if (!isKnown) {
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     return false;
   }
 
@@ -228,7 +228,7 @@ inline bool apply(const char* cmd) {
     _timerActive = false;
     if (strcmp(cmd, "reset") != 0) {
       LED::update(currentScore);
-      xSemaphoreGive(scoreMutex);
+      SCORE_UNLOCK();
       return true;
     }
   }
@@ -238,7 +238,7 @@ inline bool apply(const char* cmd) {
     _timeoutActive = false;
     if (strcmp(cmd, "reset") != 0) {
       LED::update(currentScore);
-      xSemaphoreGive(scoreMutex);
+      SCORE_UNLOCK();
       return true;
     }
   }
@@ -248,7 +248,7 @@ inline bool apply(const char* cmd) {
     _medicalActive = false;
     if (strcmp(cmd, "reset") != 0) {
       LED::update(currentScore);
-      xSemaphoreGive(scoreMutex);
+      SCORE_UNLOCK();
       return true;
     }
   }
@@ -260,7 +260,7 @@ inline bool apply(const char* cmd) {
     _serverSelectActive = false;
     currentScore.firstServer = pedalTeamA ? 0 : 1;
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     return true;
   }
   if (isPedal && _introShowing) {
@@ -268,7 +268,7 @@ inline bool apply(const char* cmd) {
     _introDismissed     = true;
     _serverSelectActive = true;
     _serverSelectStartMs = millis();
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     return true;
   }
   if (strcmp(cmd, "reset") == 0) {
@@ -322,7 +322,7 @@ inline bool apply(const char* cmd) {
     LED::update(currentScore);
     ScoreLogger::log(currentScore);
   }
-  xSemaphoreGive(scoreMutex);
+  SCORE_UNLOCK();
   return ok;
 }
 

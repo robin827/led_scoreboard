@@ -21,8 +21,9 @@
 
 // Defined in main.cpp — forward declarations so the /mode route can manage the Firebase task
 extern TaskHandle_t firebaseTaskHandle;
-extern void firebaseTask(void*);
 extern volatile uint32_t firebaseLastHeartbeat;
+extern void startFirebaseTask();
+extern void stopFirebaseTask();
 
 namespace Portal {
 
@@ -556,6 +557,20 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
 
   <div class="settings" style="margin-top:12px">
     <div class="setting-group" style="margin-bottom:0">
+      <label class="setting-label">Diagnostics</label>
+      <div id="diagSum" class="st st-n">Loading&#8230;</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" style="flex:1;background:var(--elem);color:var(--accent);font-size:0.85rem" id="btnDiagView" onclick="toggleFreezeReport()">View report</button>
+        <a class="btn" style="flex:1;background:var(--elem);color:var(--accent);font-size:0.85rem;text-align:center;text-decoration:none" href="/freeze?download=1" download>Download</a>
+        <button class="btn" style="flex:1;background:var(--elem);color:var(--accent);font-size:0.85rem" onclick="clearFreezeReport()">Clear</button>
+      </div>
+      <pre id="diagReport" style="display:none;margin-top:10px;background:var(--elem);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:0.68rem;line-height:1.45;color:#fff;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto"></pre>
+      <div style="font-size:0.7rem;color:var(--accent);margin-top:6px;line-height:1.4">If the display ever freezes, the board reboots itself and records where it got stuck. Download the report and send it along with a description of what happened.</div>
+    </div>
+  </div>
+
+  <div class="settings" style="margin-top:12px">
+    <div class="setting-group" style="margin-bottom:0">
       <label class="setting-label">Settings Password</label>
       <div class="pw-wrap" style="margin-bottom:8px">
         <input type="password" class="input" id="pinNewInput" placeholder="New password (blank to remove)">
@@ -1050,6 +1065,7 @@ function _showPageNow(id) {
     document.getElementById('subtitleText').textContent = info.label;
   }
   if (id === 'pageOverlay') fetchLog();
+  if (id === 'pageSettings') loadFreezeInfo();
 }
 
 function openPinPrompt() {
@@ -1359,6 +1375,35 @@ async function toggleWifi() {
   await fetch(isEnabled ? '/wifi/disable' : '/wifi/enable', {method:'POST'}).catch(()=>{});
   await refresh();
   if (!isEnabled) scanWiFi();
+}
+
+// ── Diagnostics / freeze report (pageSettings) ──────────────────────────────
+function loadFreezeInfo() {
+  const sum = document.getElementById('diagSum');
+  fetch('/freeze/info').then(r => r.json()).then(d => {
+    const bad = d.count > 0 || d.abnormal;
+    sum.className = 'st ' + (bad ? 'st-err' : 'st-ok');
+    sum.textContent = (d.count > 0 ? d.count + ' freeze' + (d.count > 1 ? 's' : '') + ' recorded' : 'No freeze recorded') +
+                      ' \u00b7 last reset: ' + d.reset;
+  }).catch(() => { sum.className = 'st st-err'; sum.textContent = 'Could not load diagnostics'; });
+  if (document.getElementById('diagReport').style.display !== 'none') fetchFreezeReport();
+}
+function fetchFreezeReport() {
+  const pre = document.getElementById('diagReport');
+  fetch('/freeze').then(r => r.text()).then(t => { pre.textContent = t; })
+    .catch(() => { pre.textContent = 'Could not load report'; });
+}
+function toggleFreezeReport() {
+  const pre = document.getElementById('diagReport'), btn = document.getElementById('btnDiagView');
+  const show = pre.style.display === 'none';
+  pre.style.display = show ? 'block' : 'none';
+  btn.textContent = show ? 'Hide report' : 'View report';
+  if (show) { pre.textContent = 'Loading\u2026'; fetchFreezeReport(); }
+}
+function clearFreezeReport() {
+  if (!confirm('Clear the recorded freeze reports?')) return;
+  fetch('/freeze/clear', {method:'POST'}).then(() => { showToast('Diagnostics cleared'); loadFreezeInfo(); })
+    .catch(() => showToast('Clear failed'));
 }
 
 // ── Firmware Update (pageSettings) ──────────────────────────────────────────
@@ -2089,8 +2134,32 @@ inline void init() {
   });
 
   // Status JSON (score + mode + WiFi + brightness)
+  // Freeze-detector report (see freeze_debug.h) — plain text, ?download=1
+  // to save it as a file. Shown on the Settings page's Diagnostics card.
+  server->on("/freeze", HTTP_GET, []() {
+    String id = WiFiMgr::getScoreboardId();
+    if (server->hasArg("download")) {
+      String safe;
+      for (char c : id) safe += isalnum((unsigned char)c) ? c : '-';
+      server->sendHeader("Content-Disposition", "attachment; filename=\"freeze-report-" + safe + ".txt\"");
+    }
+    String body = "Board: " + id + " | Firmware: " + FIRMWARE_VERSION +
+                  " | Uptime: " + String(millis() / 1000) + "s\n" + FreezeDebug::status();
+    server->send(200, "text/plain; charset=utf-8", body);
+  });
+  server->on("/freeze/info", HTTP_GET, []() {
+    String json = "{\"count\":" + String(FreezeDebug::freezeCount()) +
+                  ",\"reset\":\"" + _jsonEscape(FreezeDebug::resetReason()) + "\"" +
+                  ",\"abnormal\":" + (FreezeDebug::abnormalReset() ? "true" : "false") + "}";
+    server->send(200, "application/json", json);
+  });
+  server->on("/freeze/clear", HTTP_POST, []() {
+    FreezeDebug::clearHistory();
+    server->send(200, "text/plain", "OK");
+  });
+
   server->on("/status", HTTP_GET, []() {
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     uint8_t sA = currentScore.scoreA, sB = currentScore.scoreB;
     uint8_t sSetA = currentScore.setA, sSetB = currentScore.setB;
     uint8_t sFirst = currentScore.firstServer;
@@ -2098,7 +2167,7 @@ inline void init() {
     memcpy(sHistA, currentScore.histA, 3);
     memcpy(sHistB, currentScore.histB, 3);
     ServeInfo srv = getServeInfo(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     String json = "{";
     json += "\"scoreA\":" + String(sA) + ",";
     json += "\"scoreB\":" + String(sB) + ",";
@@ -2170,10 +2239,10 @@ inline void init() {
   server->on("/serve/first", HTTP_POST, []() {
     ScoreActions::notifyActivity();
     String body = server->arg("plain");
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     currentScore.firstServer = (body == "1") ? 1 : 0;
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     server->send(200, "text/plain", "OK");
   });
 
@@ -2182,10 +2251,10 @@ inline void init() {
     if (server->hasArg("plain")) {
       int hc = server->arg("plain").toInt();
       if (hc >= 0 && hc <= 99) {
-        xSemaphoreTake(scoreMutex, portMAX_DELAY);
+        SCORE_LOCK();
         currentScore.hardcap = (uint8_t)hc;
         LED::update(currentScore);
-        xSemaphoreGive(scoreMutex);
+        SCORE_UNLOCK();
         WsClient::requestPush();
       }
     }
@@ -2197,9 +2266,9 @@ inline void init() {
     if (server->hasArg("plain")) {
       int fmt = server->arg("plain").toInt();
       if (fmt >= 0 && fmt <= 2) {
-        xSemaphoreTake(scoreMutex, portMAX_DELAY);
+        SCORE_LOCK();
         currentScore.format = (uint8_t)fmt;
-        xSemaphoreGive(scoreMutex);
+        SCORE_UNLOCK();
         WsClient::requestPush();
       }
     }
@@ -2211,10 +2280,10 @@ inline void init() {
     if (server->hasArg("plain")) {
       int wp = server->arg("plain").toInt();
       if (wp >= 5 && wp <= 99) {
-        xSemaphoreTake(scoreMutex, portMAX_DELAY);
+        SCORE_LOCK();
         currentScore.winPoints = wp;
         LED::update(currentScore);
-        xSemaphoreGive(scoreMutex);
+        SCORE_UNLOCK();
       }
     }
     server->send(200, "text/plain", "OK");
@@ -2407,10 +2476,7 @@ inline void init() {
     if (oldMode == AppMode::CENTRAL) {
       WsClient::stop();
     } else if (oldMode == AppMode::FIREBASE) {
-      if (firebaseTaskHandle) {
-        vTaskDelete(firebaseTaskHandle);
-        firebaseTaskHandle = nullptr;
-      }
+      stopFirebaseTask();
     }
 
     Mode::set(newMode);
@@ -2419,9 +2485,7 @@ inline void init() {
     if (newMode == AppMode::CENTRAL) {
       WsClient::init(WsClient::loadServerIp());
     } else if (newMode == AppMode::FIREBASE) {
-      Firebase::loadPollInterval();
-      firebaseLastHeartbeat = millis();
-      xTaskCreatePinnedToCore(firebaseTask, "firebase", 8192, nullptr, 1, &firebaseTaskHandle, 0);
+      startFirebaseTask();
     }
 
     server->send(200, "text/plain", "OK");
@@ -2469,6 +2533,7 @@ inline void init() {
       server->send(503, "application/json", "{\"error\":\"Board not online\"}");
       return;
     }
+    FreezeDebug::Pause fdPause;  // GitHub HTTPS call can take >10s
     WiFiClientSecure client;
     client.setInsecure();
     HTTPClient http;
@@ -2581,9 +2646,7 @@ inline void tick() {
       WsClient::init(WsClient::loadServerIp());
     } else if (intended == AppMode::FIREBASE) {
       Mode::setEffective(AppMode::FIREBASE);
-      Firebase::loadPollInterval();
-      firebaseLastHeartbeat = millis();
-      xTaskCreatePinnedToCore(firebaseTask, "firebase", 8192, nullptr, 1, &firebaseTaskHandle, 0);
+      startFirebaseTask();
     }
   } else if (_serviceOnline && !online) {
     // Start or check grace period before tearing down — avoids reacting to brief hiccups.
@@ -2595,7 +2658,7 @@ inline void tick() {
       if (cur == AppMode::CENTRAL) {
         WsClient::stop();
       } else if (cur == AppMode::FIREBASE) {
-        if (firebaseTaskHandle) { vTaskDelete(firebaseTaskHandle); firebaseTaskHandle = nullptr; }
+        stopFirebaseTask();
       }
       if (cur != AppMode::LOCAL) Mode::setEffective(AppMode::LOCAL);
     }
@@ -2612,11 +2675,8 @@ inline void tick() {
     if (Mode::isFirebase() && firebaseTaskHandle &&
         (millis() - firebaseLastHeartbeat) >= FIREBASE_STUCK_TIMEOUT_MS) {
       Serial.println("[Firebase] Task appears stuck — recycling");
-      vTaskDelete(firebaseTaskHandle);
-      firebaseTaskHandle = nullptr;
-      Firebase::loadPollInterval();
-      firebaseLastHeartbeat = millis();
-      xTaskCreatePinnedToCore(firebaseTask, "firebase", 8192, nullptr, 1, &firebaseTaskHandle, 0);
+      stopFirebaseTask();   // force-deletes it, since it's wedged
+      startFirebaseTask();
     }
   }
 }

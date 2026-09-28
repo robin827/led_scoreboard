@@ -110,9 +110,9 @@ inline bool   isConnected()  { return _connected; }
 inline void pushState() {
   if (!_connected) return;
 
-  xSemaphoreTake(scoreMutex, portMAX_DELAY);
+  SCORE_LOCK();
   Score s = currentScore;
-  xSemaphoreGive(scoreMutex);
+  SCORE_UNLOCK();
 
   uint8_t mac[6];
   WiFi.macAddress(mac);
@@ -195,14 +195,14 @@ static void _handleCommand(const String& payload) {
     pushState();
   } else if (strcmp(action, "set_serving") == 0) {
     ScoreActions::notifyActivity();
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     currentScore.firstServer = (strcmp(team, "A") == 0) ? 0 : 1;
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     pushState();
   } else if (strcmp(action, "set_score") == 0) {
     ScoreActions::notifyActivity();
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     if (tA >= 0) currentScore.scoreA = (uint8_t)constrain(tA, 0, 99);
     if (tB >= 0) currentScore.scoreB = (uint8_t)constrain(tB, 0, 99);
     // setA/setB/histA/histB are optional — sent by the manager server's
@@ -229,14 +229,14 @@ static void _handleCommand(const String& payload) {
         currentScore.histB[i] = (uint8_t)constrain((int)newHistB[i], 0, 99);
     }
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     pushState();
   } else if (strcmp(action, "set_win_score") == 0) {
     ScoreActions::notifyActivity();
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     if (value >= 5 && value <= 99) currentScore.winPoints = (uint8_t)value;
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     pushState();
   } else if (strcmp(action, "set_brightness") == 0) {
     ScoreActions::notifyActivity();
@@ -255,16 +255,16 @@ static void _handleCommand(const String& payload) {
     pushState();
   } else if (strcmp(action, "set_hardcap") == 0) {
     ScoreActions::notifyActivity();
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     currentScore.hardcap = (uint8_t)constrain(value, 0, 99);
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     pushState();
   } else if (strcmp(action, "set_format") == 0) {
     ScoreActions::notifyActivity();
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     if (value >= 0 && value <= 2) currentScore.format = (uint8_t)value;
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     pushState();
   } else if (strcmp(action, "set_team_names") == 0) {
     ScoreActions::notifyActivity();
@@ -290,6 +290,7 @@ static void _tryConnect() {
   String url = "ws://" + _serverIp + ":" + String(_serverPort);
   Serial.printf("[WS] Connecting to %s\n", url.c_str());
 
+  FreezeDebug::Pause fdPause;  // blocking TCP connect, several seconds if the server is down
   _ws.connect(url);
 
   if (_connected) {
@@ -389,9 +390,9 @@ inline void tick() {
     // State change detection — push on any score or brightness change
     static Score   _lastScore;
     static uint8_t _lastBright = 0;
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     Score cur = currentScore;
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     uint8_t bright = LED::getBrightness();
 
     unsigned long now = millis();

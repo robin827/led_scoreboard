@@ -24,10 +24,19 @@ TaskHandle_t firebaseTaskHandle = nullptr;
 // association, before ARP/routing has fully settled) and recycle it, since
 // a task stuck inside a blocking call can't recover itself.
 volatile uint32_t firebaseLastHeartbeat = 0;
+// Cooperative stop — see stopFirebaseTask(). _fbRunning is cleared by the
+// task itself right before it deletes itself.
+static volatile bool _fbStopRequested = false;
+static volatile bool _fbRunning       = false;
+
+// Sleeps up to ms, but returns immediately when stopFirebaseTask() notifies.
+static void _fbSleep(uint32_t ms) { ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ms)); }
 
 // ── Firebase task (Core 0, Firebase mode only) ────────────────────────────────
 
-void firebaseTask(void*) {
+// Body of firebaseTask. Runs until _fbStopRequested, then returns normally so
+// its locals (Strings) are destroyed before the task deletes itself.
+static void _firebaseRun() {
   const uint32_t INTERVAL_ERR = 15000;
   const uint8_t  MAX_ERRORS   = 5;
 
@@ -67,17 +76,19 @@ void firebaseTask(void*) {
   bool freshScoreRead = true;
   bool freshTimerRead = true;
 
-  for (;;) {
+  while (!_fbStopRequested) {
     firebaseLastHeartbeat = millis();
+    FD_MARK("WiFiMgr::tick");
     WiFiMgr::tick();
 
     if (WiFiMgr::isOnline()) {
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      SCORE_LOCK();
       Score local = currentScore;
-      xSemaphoreGive(scoreMutex);
+      SCORE_UNLOCK();
 
       // Push local changes to Firebase — gated on didInitialRead, see comment
       // on its declaration above.
+      FD_MARK("Firebase writes");
       if (didInitialRead &&
           (local.scoreA != lastWritten.scoreA || local.scoreB != lastWritten.scoreB ||
            local.setA   != lastWritten.setA   || local.setB   != lastWritten.setB)) {
@@ -139,7 +150,8 @@ void firebaseTask(void*) {
       // Too many errors: pause 30s
       if (consecutiveErrors >= MAX_ERRORS) {
         Serial.println("[Firebase] Too many errors — pausing 30s");
-        vTaskDelay(30000 / portTICK_PERIOD_MS);
+        FD_MARK("error pause 30s");
+        _fbSleep(30000);
         consecutiveErrors = 0;
         continue;
       }
@@ -154,7 +166,9 @@ void firebaseTask(void*) {
       if (!didInitialRead || (now - lastRead) >= interval) {
         lastRead = now;
         Score db = local;
+        FD_MARK("Firebase::readScore");
         if (Firebase::readScore(db)) {
+          FD_MARK("readScore returned OK");
           consecutiveErrors = 0;
           didInitialRead = true;
           if (db.scoreA      != lastWritten.scoreA     || db.scoreB     != lastWritten.scoreB   ||
@@ -198,6 +212,7 @@ void firebaseTask(void*) {
         // TeamNames::get() directly, so reading back exactly what we just
         // wrote doesn't bounce back down and overwrite in-progress local edits.
         TeamNames::Names dbNames;
+        FD_MARK("Firebase::readTeamNames");
         if (Firebase::readTeamNames(dbNames)) {
           if (strcmp(dbNames.teamA, lastWrittenNames.teamA)       != 0 ||
               strcmp(dbNames.teamB, lastWrittenNames.teamB)       != 0 ||
@@ -219,6 +234,7 @@ void firebaseTask(void*) {
         // applyFromDatabase()'s unconditional timer-flags-clear (score.h)
         // never wipes a timer we're about to (re)apply right here.
         String remoteTimerType;
+        FD_MARK("Firebase::readTimerState");
         if (Firebase::readTimerState(remoteTimerType)) {
           if (freshTimerRead && remoteTimerType == "break" && !ScoreActions::isBreakTimerActive()) {
             // Stale/unknown-age break (see freshScoreRead): don't start it
@@ -239,8 +255,56 @@ void firebaseTask(void*) {
       freshTimerRead = true;
     }
 
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    FD_MARK("idle wait");
+    _fbSleep(100);
   }
+}
+
+void firebaseTask(void*) {
+  FreezeDebug::registerTask(FreezeDebug::FIREBASE);
+  _firebaseRun();
+  FD_MARK("exited");
+  Serial.println("[Firebase] Task stopped");
+  firebaseTaskHandle = nullptr;
+  _fbRunning = false;
+  vTaskDelete(nullptr);
+}
+
+void startFirebaseTask() {
+  if (_fbRunning) return;
+  _fbStopRequested = false;
+  _fbRunning = true;
+  Firebase::loadPollInterval();
+  firebaseLastHeartbeat = millis();
+  xTaskCreatePinnedToCore(firebaseTask, "firebase", 8192, nullptr, 1, &firebaseTaskHandle, 0);
+}
+
+// Asks the task to exit and waits for it (it's normally in its 100ms idle
+// wait, which the notification cuts short). Only if it doesn't exit in time —
+// i.e. it's wedged inside a blocking HTTPS call — is it force-deleted, and
+// never while it holds scoreMutex (a task deleted while holding a mutex
+// leaves it locked forever). Called from loop() / portal handlers only.
+void stopFirebaseTask() {
+  if (!_fbRunning) return;
+  FreezeDebug::Pause fdPause;
+  _fbStopRequested = true;
+  TaskHandle_t h = firebaseTaskHandle;
+  if (h) xTaskNotifyGive(h);
+
+  uint32_t start = millis();
+  while (_fbRunning && millis() - start < 1500) delay(10);
+  if (!_fbRunning) return;
+
+  // h is null only if the task was already on its way out when asked;
+  // vTaskDelete(nullptr) would delete the *calling* task (loop) instead.
+  if (!h) return;
+  while (xSemaphoreGetMutexHolder(scoreMutex) == h && millis() - start < 3000) delay(1);
+  if (!_fbRunning) return;
+  Serial.println("[Firebase] Task did not stop on request — force-deleting");
+  vTaskDelete(h);
+  firebaseTaskHandle = nullptr;
+  _fbRunning = false;
+  Firebase::_resetClient();  // it may have died mid-TLS; don't reuse that client
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
@@ -254,6 +318,7 @@ void setup() {
 
   Serial.begin(115200);
   delay(200);
+  FreezeDebug::begin();
 
   Serial.println("\n=== ROUNDNET SCOREBOARD ===");
   Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
@@ -282,6 +347,8 @@ void setup() {
 
   // Network services start in Portal::tick() once WiFi connects, not here.
 
+  FreezeDebug::startWatch();
+
   LED::update(currentScore);
 
   Serial.println("\n=== READY ===");
@@ -292,14 +359,30 @@ void setup() {
 // ── Loop (Core 1) ─────────────────────────────────────────────────────────────
 
 void loop() {
+  FreezeDebug::beat();
+  FD_MARK("WsClient::tick");
   if (Mode::isCentral()) WsClient::tick();
   // Firebase mode: WiFiMgr::tick() runs inside firebaseTask on Core 0
+  FD_MARK("WiFiMgr::tick");
   if (!Mode::isFirebase()) WiFiMgr::tick();
 
+  FD_MARK("Portal::tick");
   Portal::tick();
+  FD_MARK("EspNow::tick");
   EspNow::tick();
+  FD_MARK("tickBatterySaver");
   ScoreActions::tickBatterySaver();
+  FD_MARK("ScorePersist::tick");
   ScorePersist::tick();
+
+  // Redraw requested by an update() from Core 0 (Firebase / ESP-NOW) — see
+  // LED::update() for why Core 0 never draws itself.
+  if (LED::takePendingRedraw()) {
+    SCORE_LOCK();
+    LED::update(currentScore);
+    SCORE_UNLOCK();
+  }
+  FD_MARK("loop display logic");
 
   // Sleep animation: replaces all display logic while inactive
   if (ScoreActions::isDimActive()) {
@@ -307,9 +390,9 @@ void loop() {
     uint32_t _now = millis();
     if (_now - _lastSleepFrame >= 33) {
       _lastSleepFrame = _now;
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      SCORE_LOCK();
       LED::showSleepAnimation();
-      xSemaphoreGive(scoreMutex);
+      SCORE_UNLOCK();
     }
     delay(10);
     return;
@@ -324,14 +407,14 @@ void loop() {
     uint32_t now       = millis();
     if (remaining > 0 && now - lastTimeoutUpdate >= 33) {
       lastTimeoutUpdate = now;
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      SCORE_LOCK();
       LED::showTimeoutDisplay(remaining);
-      xSemaphoreGive(scoreMutex);
+      SCORE_UNLOCK();
     }
   } else if (prevTimeoutActive) {
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
   }
   prevTimeoutActive = timeoutActive;
 
@@ -344,14 +427,14 @@ void loop() {
     uint32_t now       = millis();
     if (remaining > 0 && now - lastMedicalUpdate >= 33) {
       lastMedicalUpdate = now;
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      SCORE_LOCK();
       LED::showMedicalTimer(remaining);
-      xSemaphoreGive(scoreMutex);
+      SCORE_UNLOCK();
     }
   } else if (prevMedicalActive && !timeoutActive) {
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
   }
   prevMedicalActive = medicalActive;
 
@@ -364,14 +447,14 @@ void loop() {
     uint32_t now = millis();
     if (now - lastTimerUpdate >= 250) {
       lastTimerUpdate = now;
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      SCORE_LOCK();
       LED::showBreakTimer(timerMs, true);
-      xSemaphoreGive(scoreMutex);
+      SCORE_UNLOCK();
     }
   } else if (prevTimerActive && !timeoutActive && !medicalActive) {
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
   }
   prevTimerActive = timerActive;
 
@@ -381,11 +464,11 @@ void loop() {
   static uint32_t introResumeAt       = 0;
   static constexpr uint32_t INTRO_RESUME_DELAY_MS = 4000; // let the serve-change be seen before resuming
 
-  xSemaphoreTake(scoreMutex, portMAX_DELAY);
+  SCORE_LOCK();
   bool matchNotStarted = (currentScore.scoreA + currentScore.scoreB +
                            currentScore.setA   + currentScore.setB) == 0;
   uint8_t curFirstServer = currentScore.firstServer;
-  xSemaphoreGive(scoreMutex);
+  SCORE_UNLOCK();
 
   // Whenever "first server" changes (portal tap, pedal a/long|b/long, or a
   // central "set_serving" command) while pre-match, hold off the marquee for
@@ -408,9 +491,9 @@ void loop() {
   }
   if (!matchNotStarted) {
     ScoreActions::cancelServerSelect();
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     bool anySetPlayed = (currentScore.setA + currentScore.setB) > 0;
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
     if (anySetPlayed) ScoreActions::clearIntroDismissed();
   }
 
@@ -422,14 +505,14 @@ void loop() {
     uint32_t now = millis();
     if (now - lastPromptUpdate >= 33) {
       lastPromptUpdate = now;
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      SCORE_LOCK();
       LED::showServerPrompt();
-      xSemaphoreGive(scoreMutex);
+      SCORE_UNLOCK();
     }
   } else if (prevServerSelect) {
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
   }
   prevServerSelect = serverSelect;
 
@@ -442,20 +525,21 @@ void loop() {
     uint32_t now = millis();
     if (now - lastIntroUpdate >= 33) {
       lastIntroUpdate = now;
-      xSemaphoreTake(scoreMutex, portMAX_DELAY);
+      SCORE_LOCK();
       LED::showTeamIntro(TeamNames::get());
-      xSemaphoreGive(scoreMutex);
+      SCORE_UNLOCK();
     }
   } else if (prevIntroActive && !serverSelect) {
-    xSemaphoreTake(scoreMutex, portMAX_DELAY);
+    SCORE_LOCK();
     LED::update(currentScore);
-    xSemaphoreGive(scoreMutex);
+    SCORE_UNLOCK();
   }
   prevIntroActive = introActive;
 
   static uint32_t lastLog = 0;
   if (millis() - lastLog > 10000) {
     lastLog = millis();
+    FD_MARK("Serial [WIFI] log line");
     Serial.printf("[WIFI] Mode: %s | AP: %s | STA: %s | Heap: %d\n",
       Mode::_modeName(Mode::get()),
       WiFi.softAPIP().toString().c_str(),
@@ -464,5 +548,6 @@ void loop() {
     );
   }
 
+  FD_MARK("loop delay(10)");
   delay(10);
 }

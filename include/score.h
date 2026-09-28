@@ -4,6 +4,7 @@
 
 #pragma once
 #include <Arduino.h>
+#include "freeze_debug.h"
 
 struct Score {
   uint8_t scoreA = 0;
