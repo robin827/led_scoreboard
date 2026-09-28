@@ -246,7 +246,21 @@ static void _firebaseRun() {
               (remoteTimerType == "break"   && ScoreActions::isBreakTimerActive()) ||
               (remoteTimerType == "timeout" && ScoreActions::isTimeoutActive())    ||
               (remoteTimerType == "medical" && ScoreActions::isMedicalActive());
-          if (freshTimerRead && remoteTimerType.length() > 0 && !alreadyRunningLocally) {
+          if (alreadyRunningLocally) {
+            // Firebase just confirms what's already running locally - e.g.
+            // the score block above already called startBreakTimer() this
+            // very tick (setJustEnded), and this read (its own separate
+            // HTTPS round-trip, which can easily take a second or more) is
+            // only now catching up. apply()/applyTimerWithElapsed() always
+            // reset the start time to "now" - calling either here would
+            // restart an already-correctly-running countdown from
+            // whatever this request's own latency happened to be, which is
+            // exactly the "board's timer restarts a couple seconds in,
+            // now running a few seconds behind everyone else" bug this
+            // guards against. Just record it as seen.
+            lastSeenRemoteTimerType = remoteTimerType;
+            lastWrittenTimerType    = remoteTimerType;
+          } else if (freshTimerRead && remoteTimerType.length() > 0) {
             if (remoteTimerElapsedMs >= 0) {
               // Known age (from Firebase's own started_at vs. this response's
               // Date header - see readTimerState) - show the real remaining
