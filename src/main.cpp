@@ -191,8 +191,27 @@ static void _firebaseRun() {
               }
             }
 
+            // Capture before applyFromDatabase() below, which unconditionally
+            // clears _timerActive as part of applying the synced score -
+            // scoreboard/'s webapp writes the new active_set/score and the
+            // break timer as two independent Firebase calls, so this board
+            // can just as easily see the timer land first (starting the
+            // break here, in an earlier tick, via the timer-read block
+            // further down) and only catch up on the score change - and
+            // therefore setJustEnded - a tick or more later. Restarting the
+            // break from 0 elapsed in that case is exactly the "board's
+            // break timer resets a few seconds in" bug reported live.
+            bool     breakAlreadyRunning     = ScoreActions::isBreakTimerActive();
+            uint32_t preexistingBreakElapsed = ScoreActions::breakTimerElapsedMs();
+
             ScoreActions::applyFromDatabase(db);
-            if (setJustEnded) ScoreActions::startBreakTimer();
+            if (setJustEnded) {
+              if (breakAlreadyRunning) {
+                ScoreActions::applyTimerWithElapsed("break", preexistingBreakElapsed);
+              } else {
+                ScoreActions::startBreakTimer();
+              }
+            }
 
             lastWritten    = db;
             lastWrittenWP  = db.winPoints;

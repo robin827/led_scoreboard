@@ -148,6 +148,12 @@ inline uint32_t breakTimerRemainingMs() {
   if (elapsed >= BREAK_DURATION_MS) { _timerActive = false; return 0; }
   return BREAK_DURATION_MS - elapsed;
 }
+// How long the currently-running break has already been going, or 0 if none
+// — used to carry a break's elapsed time across applyFromDatabase() (which
+// unconditionally clears _timerActive as part of applying a wholesale score
+// sync), so a break that was already correctly running isn't reset back to
+// 0 elapsed by a same-transition score catch-up arriving in a later tick.
+inline uint32_t breakTimerElapsedMs() { return _timerActive ? (millis() - _timerStartMs) : 0; }
 
 inline bool isTimeoutActive() { return _timeoutActive; }
 inline uint32_t timeoutCountdownMs() {
