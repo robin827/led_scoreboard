@@ -2493,7 +2493,20 @@ inline void init() {
 
   server->on("/firebase/channel", HTTP_POST, []() {
     if (!server->hasArg("plain")) { server->send(400, "text/plain", "Bad"); return; }
-    Firebase::setChannel(server->arg("plain"));
+    String newChannel = server->arg("plain");
+    // Restart the Firebase task on an actual channel change (while it's
+    // running) so the new channel's first read goes through the same
+    // freshScoreRead/freshTimerRead "don't trust this blindly" gate as a
+    // genuine boot/reconnect — setChannel() alone doesn't touch that task,
+    // so a channel switch used to skip the gate entirely and could fire a
+    // leftover timer from the new channel immediately.
+    if (newChannel != Firebase::getChannel() && Mode::isFirebase()) {
+      stopFirebaseTask();
+      Firebase::setChannel(newChannel);
+      startFirebaseTask();
+    } else {
+      Firebase::setChannel(newChannel);
+    }
     server->send(200, "text/plain", "OK");
   });
 

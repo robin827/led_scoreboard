@@ -155,6 +155,29 @@ inline const char* activeTimerType() {
   return nullptr;
 }
 
+// Start a timer as if it had already been running for elapsedMs — used when
+// picking up a timer/timeout/medical that was already active in Firebase on
+// a fresh read (boot, WiFi reconnect, Firebase channel switch), so the board
+// shows the actual remaining time instead of either a full fresh countdown
+// (wrong — it wasn't just started) or nothing at all (the old fallback, for
+// when the elapsed time genuinely couldn't be determined). Reuses the same
+// remaining-ms getters (breakTimerRemainingMs() etc.), which already clamp
+// to 0/inactive once elapsed passes the type's duration — so passing an
+// elapsedMs at or past that duration self-corrects on the very next read
+// instead of needing to be filtered out here.
+inline void applyTimerWithElapsed(const char* type, uint32_t elapsedMs) {
+  SCORE_LOCK();
+  _timerActive   = false;
+  _timeoutActive = false;
+  _medicalActive = false;
+  uint32_t startMs = (elapsedMs < millis()) ? (millis() - elapsedMs) : 0;
+  if (strcmp(type, "timeout") == 0)      { _timeoutActive = true; _timeoutStartMs = startMs; }
+  else if (strcmp(type, "medical") == 0) { _medicalActive = true; _medicalStartMs = startMs; }
+  else if (strcmp(type, "break") == 0)   { _timerActive   = true; _timerStartMs   = startMs; }
+  LED::update(currentScore);
+  SCORE_UNLOCK();
+}
+
 // Apply a score state received from Firebase — cancels break/timeout timers, updates display
 inline void applyFromDatabase(const Score& db) {
   notifyActivity();

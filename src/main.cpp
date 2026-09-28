@@ -234,21 +234,39 @@ static void _firebaseRun() {
         // applyFromDatabase()'s unconditional timer-flags-clear (score.h)
         // never wipes a timer we're about to (re)apply right here.
         String remoteTimerType;
+        long   remoteTimerElapsedMs = -1;
         FD_MARK("Firebase::readTimerState");
-        if (Firebase::readTimerState(remoteTimerType)) {
-          // Stale/unknown-age timer (see freshScoreRead): any of break/
-          // timeout/medical seen on the first read after (re)connect gets
-          // the same treatment, not just break - a lingering "timeout" or
+        if (Firebase::readTimerState(remoteTimerType, remoteTimerElapsedMs)) {
+          // Any of break/timeout/medical seen on the first read after
+          // (re)connect (boot, WiFi drop, or a Firebase channel switch) gets
+          // special handling here, not just break - a lingering "timeout" or
           // "medical" left running by another writer used to fire instantly
-          // on connect since only "break" was ever checked here.
+          // on connect since only "break" was ever checked.
           bool alreadyRunningLocally =
               (remoteTimerType == "break"   && ScoreActions::isBreakTimerActive()) ||
               (remoteTimerType == "timeout" && ScoreActions::isTimeoutActive())    ||
               (remoteTimerType == "medical" && ScoreActions::isMedicalActive());
           if (freshTimerRead && remoteTimerType.length() > 0 && !alreadyRunningLocally) {
-            // Don't start it here, and don't clear it in Firebase either -
-            // just remember it as seen so later polls don't pick it up as a
-            // new change.
+            if (remoteTimerElapsedMs >= 0) {
+              // Known age (from Firebase's own started_at vs. this response's
+              // Date header - see readTimerState) - show the real remaining
+              // time instead of either restarting a full countdown or
+              // hiding it. applyTimerWithElapsed's remaining-ms getters
+              // self-clamp to 0/inactive if this timer already expired
+              // while we were offline, so an over-large elapsed here is
+              // harmless.
+              ScoreActions::applyTimerWithElapsed(remoteTimerType.c_str(), (uint32_t)remoteTimerElapsedMs);
+              // We didn't change what Firebase's started_at means - it's
+              // still the real original start time - so treat it as already
+              // "written" too, or the push block above would PUT a fresh
+              // started_at (= now) on the very next iteration and silently
+              // shorten every other reader's view of this same timer.
+              lastWrittenTimerType = remoteTimerType;
+            }
+            // Elapsed unknown (old data with no started_at, or the Date
+            // header couldn't be parsed): don't start it here, and don't
+            // clear it in Firebase either - just remember it as seen so
+            // later polls don't pick it up as a new change.
             lastSeenRemoteTimerType = remoteTimerType;
           } else if (remoteTimerType != lastSeenRemoteTimerType) {
             ScoreActions::apply(remoteTimerType.length() > 0 ? remoteTimerType.c_str() : "stoptimer");

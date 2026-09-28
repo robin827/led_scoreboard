@@ -92,6 +92,51 @@ inline uint8_t _parseSetMode(const String& raw) {
   return 2; // default: Best of 3 (also covers "3", "Best of 3", unrecognized)
 }
 
+// Parses an RFC 1123 HTTP "Date" header ("Tue, 28 Sep 2026 20:14:00 GMT",
+// always GMT per spec) into epoch milliseconds. Returns 0 on any parse
+// failure. Hand-rolled rather than strptime/timegm since neither is
+// reliably available across the ESP32 Arduino core's libc — used to learn
+// the current wall-clock time from Firebase's own response instead of
+// needing NTP (which needs UDP/123, not guaranteed open on venue WiFi; this
+// reuses the HTTPS connection every Firebase read already makes).
+// Returns int64_t, not long: `long` is 32-bit on ESP32 (same as `int`), and
+// an epoch millisecond value (~1.7e12) overflows that long before the
+// function even returns it — this only needs to fit an epoch in *seconds*
+// (~1.7e9, fine in 32 bits), not milliseconds.
+inline int64_t _parseHttpDateToEpochMs(const String& date) {
+  if (date.length() < 29) return 0; // "Tue, 28 Sep 2026 20:14:00 GMT" == 29 chars
+  int day  = date.substring(5, 7).toInt();
+  String mon = date.substring(8, 11);
+  int year = date.substring(12, 16).toInt();
+  int hour = date.substring(17, 19).toInt();
+  int mins = date.substring(20, 22).toInt();
+  int sec  = date.substring(23, 25).toInt();
+
+  static const char* MONTHS = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  int monIdx = -1;
+  for (int i = 0; i < 12; i++) {
+    if (mon[0] == MONTHS[i * 3] && mon[1] == MONTHS[i * 3 + 1] && mon[2] == MONTHS[i * 3 + 2]) {
+      monIdx = i;
+      break;
+    }
+  }
+  if (monIdx < 0 || day < 1 || day > 31 || year < 2020) return 0;
+
+  static const int16_t CUM_DAYS[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+  bool leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+  int64_t days = 0;
+  for (int y = 1970; y < year; y++) {
+    bool yLeap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+    days += yLeap ? 366 : 365;
+  }
+  days += CUM_DAYS[monIdx];
+  if (monIdx > 1 && leap) days += 1;
+  days += (day - 1);
+
+  int64_t epochSec = days * 86400LL + hour * 3600LL + mins * 60LL + sec;
+  return epochSec * 1000LL;
+}
+
 // ── Lecture du score depuis Firebase ──────────────────────────────────────
 
 inline bool readScore(Score& score) {
@@ -502,8 +547,16 @@ inline bool writeTimerState(const char* type) {
 }
 
 // Returns true on a successful read, with outType set to "timeout"/"medical"/
-// "break", or "" when no timer is currently active in Firebase.
-inline bool readTimerState(String& outType) {
+// "break", or "" when no timer is currently active in Firebase. outElapsedMs
+// is how long that timer has already been running, computed from the node's
+// "started_at" (a Firebase server timestamp) against this same response's
+// HTTP "Date" header — both timestamps come from Firebase's own frontend, so
+// no local wall-clock/NTP sync is needed. Set to -1 (unknown) when outType
+// is "" or when either timestamp couldn't be read/parsed — callers that
+// can't trust an elapsed time should treat that the same as "just don't
+// know", not as "0 elapsed".
+inline bool readTimerState(String& outType, long& outElapsedMs) {
+  outElapsedMs = -1;
   String channel = getChannel();
   if (channel.isEmpty()) return false;
   if (!WiFi.isConnected()) return false;
@@ -513,8 +566,10 @@ inline bool readTimerState(String& outType) {
   HTTPClient http;
   http.setTimeout(8000);
   http.setReuse(false);
-  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/timer/type.json";
+  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/timer.json";
   if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
+  const char* headerKeys[] = {"Date"};
+  http.collectHeaders(headerKeys, 1);
   int code = http.GET();
   if (code != 200) {
     http.end();
@@ -522,13 +577,27 @@ inline bool readTimerState(String& outType) {
     return false;
   }
   String payload = http.getString();
+  String dateHeader = http.header("Date");
   http.end();
-  payload.trim();
 
-  if (payload.length() >= 2 && payload[0] == '"' && payload[payload.length() - 1] == '"') {
-    outType = payload.substring(1, payload.length() - 1);
-  } else {
-    outType = ""; // "null" (no timer) or unexpected shape
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err || doc.isNull()) {
+    outType = ""; // "null" (no timer) or unexpected/unparseable shape
+    return true;
+  }
+  outType = String((const char*)(doc["type"] | ""));
+  if (outType.length() > 0 && doc["started_at"].is<int64_t>()) {
+    int64_t startedAt  = doc["started_at"];
+    int64_t serverNow  = _parseHttpDateToEpochMs(dateHeader);
+    int64_t elapsed    = serverNow - startedAt;
+    // Cap at ~24 days so this always fits the 32-bit `long` outElapsedMs is
+    // declared as — real elapsed times here are at most a few minutes
+    // (BREAK/TIMEOUT/MEDICAL durations), this is just a sanity clamp against
+    // a clock-skew/parse edge case producing a huge or negative delta.
+    if (serverNow > 0 && startedAt > 0 && elapsed >= 0 && elapsed < 2000000000LL) {
+      outElapsedMs = (long)elapsed;
+    }
   }
   return true;
 }
