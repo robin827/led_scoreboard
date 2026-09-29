@@ -833,6 +833,7 @@ async function refresh() {
       document.getElementById('pageTitle').textContent = d.boardId;
     }
     if (d.winPoints) {
+      _curWinPoints = d.winPoints;
       document.querySelectorAll('[data-wp]').forEach(b =>
         b.classList.toggle('active', parseInt(b.dataset.wp) === d.winPoints));
       const wpPresets = [11, 15, 17, 21];
@@ -974,6 +975,7 @@ async function refresh() {
 const _HC_FOR_WIN = {11:15, 15:17, 17:21, 21:25};
 
 async function setWinPoints(val) {
+  _curWinPoints = val;  // optimistic — see _curWinPoints' comment
   document.querySelectorAll('[data-wp]').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.wp) === val));
   try { await fetch('/winpoints', {method:'POST', body: String(val)}); } catch(e) {}
@@ -983,6 +985,7 @@ async function setWinPoints(val) {
 function applyCustomWinPoints() {
   const v = parseInt(document.getElementById('wpCustom').value);
   if (!isNaN(v) && v >= 1 && v <= 99) {
+    _curWinPoints = v;  // optimistic — see _curWinPoints' comment
     // Custom win score: only set win points, leave hardcap unchanged
     document.querySelectorAll('[data-wp]').forEach(b => b.classList.remove('active'));
     _wpCustomDirty = false;
@@ -990,6 +993,13 @@ function applyCustomWinPoints() {
   }
 }
 async function setHardcap(val) {
+  // 0 = disabled, always allowed regardless of win points. Anything else
+  // must be at least the win score, or the set could hit hardcap before it
+  // could ever reach a real win — reported live as wanting this guarded.
+  if (val !== 0 && val < _curWinPoints) {
+    showToast(`Hardcap can't be below the win score (${_curWinPoints})`);
+    return;
+  }
   document.querySelectorAll('[data-hc]').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.hc) === val));
   try { await fetch('/hardcap', {method:'POST', body: String(val)}); } catch(e) {}
@@ -1272,6 +1282,12 @@ let _serverIpDirty = false;
 let _teamsDirty = false;
 let _wpCustomDirty = false;
 let _hcCustomDirty = false;
+// Tracks the board's current win score so setHardcap() can reject a hardcap
+// below it (0 stays a valid "no hardcap" sentinel regardless). Updated from
+// /status on every refresh(), and optimistically the moment the operator
+// changes win points themselves so a same-click auto-adjusted hardcap (see
+// _HC_FOR_WIN) is never compared against a stale value.
+let _curWinPoints = 21;
 async function saveBoardId() {
   const val = document.getElementById('boardId').value.trim();
   if (val.length === 0) return;
