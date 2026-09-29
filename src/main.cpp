@@ -181,7 +181,8 @@ static void _firebaseRun() {
 
       // Push this board's own active timer (or its absence, on natural
       // expiry/cancel) up to Firebase — see firebase.h's writeTimerState.
-      const char* localTimerType = ScoreActions::activeTimerType();
+      // Timer key, e.g. "a/timeout" - carries the calling team too.
+      const char* localTimerType = ScoreActions::activeTimerKey();
       String localTimerStr = localTimerType ? String(localTimerType) : String("");
       if (didInitialRead && localTimerStr != lastWrittenTimerType) {
         if (Firebase::writeTimerState(localTimerType)) {
@@ -308,11 +309,22 @@ static void _firebaseRun() {
           // special handling here, not just break - a lingering "timeout" or
           // "medical" left running by another writer used to fire instantly
           // on connect since only "break" was ever checked.
+          // remoteTimerType is a timer key ("a/timeout", "medical"...) -
+          // compare the type part here; the team is handled just below.
+          int slash = remoteTimerType.indexOf('/');
+          String remoteBareType = slash >= 0 ? remoteTimerType.substring(slash + 1) : remoteTimerType;
+          int8_t remoteTeam = slash < 0 ? -1 : (remoteTimerType[0] == 'a' ? 0 : 1);
           bool alreadyRunningLocally =
-              (remoteTimerType == "break"   && ScoreActions::isBreakTimerActive()) ||
-              (remoteTimerType == "timeout" && ScoreActions::isTimeoutActive())    ||
-              (remoteTimerType == "medical" && ScoreActions::isMedicalActive());
+              (remoteBareType == "break"   && ScoreActions::isBreakTimerActive()) ||
+              (remoteBareType == "timeout" && ScoreActions::isTimeoutActive())    ||
+              (remoteBareType == "medical" && ScoreActions::isMedicalActive());
           if (alreadyRunningLocally) {
+            // Same timer, but another writer (scoreboard/'s input.html)
+            // re-assigned it to the other team - follow the team without
+            // restarting the countdown (same reasoning as below).
+            if (remoteBareType != "break" && remoteTeam != ScoreActions::activeTimerTeam()) {
+              ScoreActions::setTimerTeam(remoteTeam);
+            }
             // Firebase just confirms what's already running locally - e.g.
             // the score block above already called startBreakTimer() this
             // very tick (setJustEnded), and this read (its own separate
@@ -525,7 +537,7 @@ void loop() {
     if (remaining > 0 && now - lastTimeoutUpdate >= 33) {
       lastTimeoutUpdate = now;
       SCORE_LOCK();
-      LED::showTimeoutDisplay(remaining);
+      LED::showTimeoutDisplay(remaining, ScoreActions::activeTimerTeam());
       SCORE_UNLOCK();
     }
   } else if (prevTimeoutActive) {
@@ -545,7 +557,7 @@ void loop() {
     if (remaining > 0 && now - lastMedicalUpdate >= 33) {
       lastMedicalUpdate = now;
       SCORE_LOCK();
-      LED::showMedicalTimer(remaining);
+      LED::showMedicalTimer(remaining, ScoreActions::activeTimerTeam());
       SCORE_UNLOCK();
     }
   } else if (prevMedicalActive && !timeoutActive) {

@@ -432,11 +432,19 @@ static const uint8_t _TG_E[5][3] = {{1,1,1},{1,0,0},{1,1,0},{1,0,0},{1,1,1}};
 static const uint8_t _TG_O[5][3] = {{1,1,1},{1,0,1},{1,0,1},{1,0,1},{1,1,1}};
 static const uint8_t _TG_U[5][3] = {{1,0,1},{1,0,1},{1,0,1},{1,0,1},{1,1,1}};
 
-inline void showTimeoutDisplay(uint32_t remainingMs) {
+// Countdown digits in the calling team's own color (0 = A, 1 = B — see
+// ScoreActions::activeTimerTeam()), the usual green when no team called it.
+inline CRGB _timerTeamColor(int8_t team) {
+  if (team == 0) return COLOR_A;
+  if (team == 1) return COLOR_B;
+  return CRGB(0, 210, 80);
+}
+
+inline void showTimeoutDisplay(uint32_t remainingMs, int8_t team = -1) {
   _timerMode = true;
   FastLED.clear();
 
-  CRGB timerCol = CRGB(0, 210, 80);
+  CRGB timerCol = _timerTeamColor(team);
   CRGB textCol  = CRGB(255, 120, 0);
 
   uint32_t totalSec = (remainingMs + 999) / 1000;
@@ -480,11 +488,11 @@ static const uint8_t _TG_C[5][3] = {{0,1,1},{1,0,0},{1,0,0},{1,0,0},{0,1,1}};
 static const uint8_t _TG_A[5][3] = {{0,1,0},{1,0,1},{1,1,1},{1,0,1},{1,0,1}};
 static const uint8_t _TG_L[5][3] = {{1,0,0},{1,0,0},{1,0,0},{1,0,0},{1,1,1}};
 
-inline void showMedicalTimer(uint32_t remainingMs) {
+inline void showMedicalTimer(uint32_t remainingMs, int8_t team = -1) {
   _timerMode = true;
   FastLED.clear();
 
-  CRGB timerCol = CRGB(0, 210, 80);
+  CRGB timerCol = _timerTeamColor(team);
   CRGB textCol  = CRGB(255, 80, 80);
 
   uint32_t totalSec = (remainingMs + 999) / 1000;

@@ -18,6 +18,11 @@ static volatile bool     _timeoutActive    = false;
 static volatile uint32_t _timeoutStartMs   = 0;
 static volatile bool     _medicalActive    = false;
 static volatile uint32_t _medicalStartMs   = 0;
+// Team that called the running timeout/medical: 0 = A, 1 = B, -1 = none
+// (plain "timeout"/"medical" from the portal/webapp/older pedals, or a
+// break). Set by the "a/timeout", "b/medical"... commands - e.g. a pedal
+// triple-click - and synced as match-<channel>/timer/team.
+static volatile int8_t   _timerTeam        = -1;
 // Whether the currently-running (or most recently run) break was started by
 // an actual pedal long-press, as opposed to the portal's "Next Set" button
 // or a remote/Firebase/CENTRAL-synced set change. Set wherever a break
@@ -155,6 +160,19 @@ inline uint32_t breakTimerRemainingMs() {
 // 0 elapsed by a same-transition score catch-up arriving in a later tick.
 inline uint32_t breakTimerElapsedMs() { return _timerActive ? (millis() - _timerStartMs) : 0; }
 
+// Timer keys: a timer command/state is "<type>" or "<a|b>/<type>" — the
+// same string is the apply() command, activeTimerKey()'s return value and
+// what firebase.h/main.cpp compare against Firebase. Splits it into the
+// bare type and team (0/1, or -1 when there's no team prefix).
+inline const char* _splitTimerKey(const char* key, int8_t& team) {
+  team = -1;
+  if (key && (key[0] == 'a' || key[0] == 'b') && key[1] == '/') {
+    team = (key[0] == 'a') ? 0 : 1;
+    return key + 2;
+  }
+  return key ? key : "";
+}
+
 inline bool isTimeoutActive() { return _timeoutActive; }
 inline uint32_t timeoutCountdownMs() {
   if (!_timeoutActive) return 0;
@@ -182,6 +200,30 @@ inline const char* activeTimerType() {
   return nullptr;
 }
 
+// Team of the running timeout/medical (0 = A, 1 = B), -1 if none/break.
+inline int8_t activeTimerTeam() {
+  return (_timeoutActive || _medicalActive) ? _timerTeam : -1;
+}
+
+// activeTimerType() with its team prefix, e.g. "a/timeout", "b/medical",
+// "timeout" (no team), "break" — or nullptr when nothing is running.
+inline const char* activeTimerKey() {
+  const char* type = activeTimerType();
+  if (!type) return nullptr;
+  int8_t team = activeTimerTeam();
+  if (team < 0) return type;
+  if (_timeoutActive) return team == 0 ? "a/timeout" : "b/timeout";
+  return team == 0 ? "a/medical" : "b/medical";
+}
+
+// Another writer switched which team the already-running timeout/medical
+// belongs to - change the team without restarting the countdown.
+inline void setTimerTeam(int8_t team) {
+  SCORE_LOCK();
+  _timerTeam = team;
+  SCORE_UNLOCK();
+}
+
 // Start a timer as if it had already been running for elapsedMs — used when
 // picking up a timer/timeout/medical that was already active in Firebase on
 // a fresh read (boot, WiFi reconnect, Firebase channel switch), so the board
@@ -192,11 +234,14 @@ inline const char* activeTimerType() {
 // to 0/inactive once elapsed passes the type's duration — so passing an
 // elapsedMs at or past that duration self-corrects on the very next read
 // instead of needing to be filtered out here.
-inline void applyTimerWithElapsed(const char* type, uint32_t elapsedMs) {
+inline void applyTimerWithElapsed(const char* key, uint32_t elapsedMs) {
+  int8_t team;
+  const char* type = _splitTimerKey(key, team);
   SCORE_LOCK();
   _timerActive   = false;
   _timeoutActive = false;
   _medicalActive = false;
+  _timerTeam     = (strcmp(type, "break") == 0) ? -1 : team;
   uint32_t startMs = (elapsedMs < millis()) ? (millis() - elapsedMs) : 0;
   if (strcmp(type, "timeout") == 0)      { _timeoutActive = true; _timeoutStartMs = startMs; }
   else if (strcmp(type, "medical") == 0) { _medicalActive = true; _medicalStartMs = startMs; }
@@ -222,32 +267,39 @@ inline bool apply(const char* cmd) {
   SCORE_LOCK();
 
   // Timer commands (timeout/break/medical) are mutually exclusive — starting
-  // one always cancels whichever of the other two was running.
-  if (strcmp(cmd, "timeout") == 0) {
+  // one always cancels whichever of the other two was running. Timeout and
+  // medical take an optional team prefix ("a/timeout", "b/medical" — a
+  // pedal triple-click sends "<a|b>/timeout"); checked before the generic
+  // "a/"/"b/" game-command handling below so they never cancel/score.
+  int8_t timerTeam;
+  const char* timerType = _splitTimerKey(cmd, timerTeam);
+  if (strcmp(timerType, "timeout") == 0 || strcmp(timerType, "medical") == 0) {
+    bool isTimeout = (timerType[0] == 't');
+    // Same team re-triggering its already-running timer (e.g. a second
+    // triple-click): keep the countdown going instead of restarting it.
+    if ((isTimeout ? _timeoutActive : _medicalActive) && _timerTeam == timerTeam) {
+      SCORE_UNLOCK();
+      return true;
+    }
     _timerActive    = false;
-    _medicalActive  = false;
-    _timeoutActive  = true;
-    _timeoutStartMs = millis();
+    _timeoutActive  = isTimeout;
+    _medicalActive  = !isTimeout;
+    if (isTimeout) _timeoutStartMs = millis();
+    else           _medicalStartMs = millis();
+    _timerTeam      = timerTeam;
     SCORE_UNLOCK();
     return true;
   }
   if (strcmp(cmd, "break") == 0) {
     _timeoutActive  = false;
     _medicalActive  = false;
+    _timerTeam      = -1;
     _timerActive    = true;
     _timerStartMs   = millis();
     // The portal's manual break button and every relayed CENTRAL/remote
     // "break" command land here — never a pedal command (see
     // _isPedalPress()), so this is never pedal-driven.
     _breakIsPedalDriven = false;
-    SCORE_UNLOCK();
-    return true;
-  }
-  if (strcmp(cmd, "medical") == 0) {
-    _timerActive    = false;
-    _timeoutActive  = false;
-    _medicalActive  = true;
-    _medicalStartMs = millis();
     SCORE_UNLOCK();
     return true;
   }

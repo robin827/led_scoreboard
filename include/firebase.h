@@ -544,8 +544,18 @@ inline bool writeFormat(uint8_t format) {
 // its own copy of the same fixed durations this board already hardcodes in
 // score_actions.h (BREAK/TIMEOUT/MEDICAL_*_MS) — RTDB only ever carries
 // *which* timer (if any) is running, never how long it lasts.
+// Timers are passed around as timer keys ("timeout", "a/timeout",
+// "b/medical", "break" — same strings as ScoreActions::activeTimerKey() and
+// its apply() commands): the "a/"/"b/" prefix maps to the node's optional
+// `team: "a"|"b"`, the rest to `type`.
 
-inline bool writeTimerState(const char* type) {
+inline bool writeTimerState(const char* key) {
+  const char* type = key;
+  const char* team = nullptr;
+  if (key && (key[0] == 'a' || key[0] == 'b') && key[1] == '/') {
+    team = (key[0] == 'a') ? "a" : "b";
+    type = key + 2;
+  }
   String channel = getChannel();
   if (channel.isEmpty()) return false;
   if (!WiFi.isConnected()) return false;
@@ -565,6 +575,7 @@ inline bool writeTimerState(const char* type) {
   } else {
     JsonDocument doc;
     doc["type"] = type;
+    if (team) doc["team"] = team;
     doc["started_at"][".sv"] = "timestamp"; // Firebase server-timestamp sentinel
     String payload;
     serializeJson(doc, payload);
@@ -575,12 +586,13 @@ inline bool writeTimerState(const char* type) {
   http.end();
 
   if (code < 0) { _resetClient(); return false; }
-  Serial.printf("[Firebase] writeTimerState OK: %s (code %d)\n", (type && type[0]) ? type : "(none)", code);
+  Serial.printf("[Firebase] writeTimerState OK: %s (code %d)\n", (key && key[0]) ? key : "(none)", code);
   return code == 200;
 }
 
-// Returns true on a successful read, with outType set to "timeout"/"medical"/
-// "break", or "" when no timer is currently active in Firebase. outElapsedMs
+// Returns true on a successful read, with outType set to the timer key
+// ("timeout"/"medical"/"break", prefixed "a/"/"b/" when the node has a
+// `team`), or "" when no timer is currently active in Firebase. outElapsedMs
 // is how long that timer has already been running, computed from the node's
 // "started_at" (a Firebase server timestamp) against this same response's
 // HTTP "Date" header — both timestamps come from Firebase's own frontend, so
@@ -620,6 +632,10 @@ inline bool readTimerState(String& outType, long& outElapsedMs) {
     return true;
   }
   outType = String((const char*)(doc["type"] | ""));
+  String team = String((const char*)(doc["team"] | ""));
+  if ((outType == "timeout" || outType == "medical") && (team == "a" || team == "b")) {
+    outType = team + "/" + outType;
+  }
   if (outType.length() > 0 && doc["started_at"].is<int64_t>()) {
     int64_t startedAt  = doc["started_at"];
     int64_t serverNow  = _parseHttpDateToEpochMs(dateHeader);

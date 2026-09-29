@@ -142,6 +142,12 @@ inline void pushState() {
   doc["timeoutMs"] = ScoreActions::timeoutCountdownMs();
   doc["medicalMs"] = ScoreActions::medicalCountdownMs();
   doc["breakMs"]   = ScoreActions::breakTimerRemainingMs();
+  // Team that called the running timeout/medical ("a"/"b", absent when none)
+  // + a capability flag, so the manager server's bridge knows it may send
+  // "a/timeout"-style actions (older firmware only understands "timeout").
+  int8_t timerTeam = ScoreActions::activeTimerTeam();
+  if (timerTeam >= 0) doc["timerTeam"] = (timerTeam == 0) ? "a" : "b";
+  doc["teamTimers"] = true;
 
   uint8_t setsPlayed = s.setA + s.setB;
   JsonArray ha = doc["histA"].to<JsonArray>();
@@ -246,6 +252,8 @@ static void _handleCommand(const String& payload) {
     ScoreActions::apply("nextset");
     pushState();
   } else if (strcmp(action, "timeout") == 0 || strcmp(action, "medical") == 0 ||
+             strcmp(action, "a/timeout") == 0 || strcmp(action, "b/timeout") == 0 ||
+             strcmp(action, "a/medical") == 0 || strcmp(action, "b/medical") == 0 ||
              strcmp(action, "break")   == 0 || strcmp(action, "stoptimer") == 0) {
     // Relayed from the manager server's Firebase bridge (or, in the future,
     // any other WS-side trigger) when the shared RTDB timer/type node

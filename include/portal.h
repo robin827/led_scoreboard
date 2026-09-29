@@ -388,9 +388,15 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
   </div>
 
   <div class="settings" style="margin-top:12px">
+    <!-- Per-team timeouts, in each team's color (same as the +1/-1 buttons) -
+         the LED countdown then shows in that team's color too. -->
+    <div class="setting-group" style="margin:0 0 8px 0;display:flex;gap:8px">
+      <button class="btn btn-secondary-a" style="flex:1" onclick="action('/a/timeout',this)">Timeout</button>
+      <button class="btn btn-secondary-b" style="flex:1" onclick="action('/b/timeout',this)">Timeout</button>
+    </div>
     <div class="setting-group" style="margin:0;display:flex;gap:8px">
-      <button class="btn" style="flex:1" onclick="action('/timeout',this)">Timeout</button>
-      <button class="btn" style="flex:1" onclick="action('/medical',this)">Medical</button>
+      <button class="btn btn-secondary-a" style="flex:1" onclick="action('/a/medical',this)">Medical</button>
+      <button class="btn btn-secondary-b" style="flex:1" onclick="action('/b/medical',this)">Medical</button>
     </div>
   </div>
 
@@ -908,12 +914,17 @@ async function refresh() {
     const toSecs    = d.timeoutTimer || 0;
     const medSecs   = d.medicalTimer || 0;
 
+    // Team that called the timeout/medical ("a"/"b"), named like the score labels.
+    const timerTeamName = d.timerTeam === 'a' ? (d.teamA || 'Team A')
+                        : d.timerTeam === 'b' ? (d.teamB || 'Team B') : '';
+    const withTeam = (label) => timerTeamName ? label + ' · ' + timerTeamName : label;
+
     if (medSecs > 0) {
-      _showTimerView('Medical');
+      _showTimerView(withTeam('Medical'));
       _localTimerEndMs = Date.now() + medSecs * 1000;
       updateTimerDisplay();
     } else if (toSecs > 0) {
-      _showTimerView('Time Out');
+      _showTimerView(withTeam('Time Out'));
       _localTimerEndMs = Date.now() + toSecs * 1000;
       updateTimerDisplay();
     } else if (breakSecs > 0) {
@@ -2210,6 +2221,7 @@ inline void init() {
     json += "\"breakTimer\":" + String(ScoreActions::breakTimerRemainingMs() / 1000) + ",";
     json += "\"timeoutTimer\":" + String(ScoreActions::timeoutCountdownMs() / 1000) + ",";
     json += "\"medicalTimer\":" + String(ScoreActions::medicalCountdownMs() / 1000) + ",";
+    json += "\"timerTeam\":\"" + String(ScoreActions::activeTimerTeam() == 0 ? "a" : ScoreActions::activeTimerTeam() == 1 ? "b" : "") + "\",";
     json += "\"rotations\":" + String(ScoreActions::getRotationCount()) + ",";
     json += "\"setsPlayed\":" + String(sSetA + sSetB) + ",";
     json += "\"histA\":[";
@@ -2257,6 +2269,10 @@ inline void init() {
   });
   server->on("/timeout", HTTP_POST, []() { ScoreActions::apply("timeout"); server->send(200, "text/plain", "OK"); });
   server->on("/medical", HTTP_POST, []() { ScoreActions::apply("medical"); server->send(200, "text/plain", "OK"); });
+  server->on("/a/timeout", HTTP_POST, []() { ScoreActions::apply("a/timeout"); server->send(200, "text/plain", "OK"); });
+  server->on("/b/timeout", HTTP_POST, []() { ScoreActions::apply("b/timeout"); server->send(200, "text/plain", "OK"); });
+  server->on("/a/medical", HTTP_POST, []() { ScoreActions::apply("a/medical"); server->send(200, "text/plain", "OK"); });
+  server->on("/b/medical", HTTP_POST, []() { ScoreActions::apply("b/medical"); server->send(200, "text/plain", "OK"); });
   server->on("/reset",   HTTP_POST, []() { ScoreActions::apply("reset");   server->send(200, "text/plain", "OK"); });
 
   server->on("/serve/first", HTTP_POST, []() {
