@@ -426,7 +426,7 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
           <button class="win-btn active" data-wp="21" onclick="setWinPoints(21)">21</button>
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
-          <input type="number" id="wpCustom" min="1" max="99" placeholder="Custom" class="input" style="flex:1;padding:8px 10px;font-size:0.85rem">
+          <input type="number" id="wpCustom" min="1" max="99" placeholder="Custom" class="input" style="flex:1;padding:8px 10px;font-size:0.85rem" oninput="_wpCustomDirty=true">
           <button onclick="applyCustomWinPoints()" style="padding:8px 14px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:0.85rem;cursor:pointer;white-space:nowrap">Set</button>
         </div>
       </div>
@@ -439,7 +439,7 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
           <button class="win-btn" data-hc="25" onclick="setHardcap(25)">25</button>
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
-          <input type="number" id="hcCustom" min="0" max="99" placeholder="Custom (0 = off)" class="input" style="flex:1;padding:8px 10px;font-size:0.85rem">
+          <input type="number" id="hcCustom" min="0" max="99" placeholder="Custom (0 = off)" class="input" style="flex:1;padding:8px 10px;font-size:0.85rem" oninput="_hcCustomDirty=true">
           <button onclick="applyCustomHardcap()" style="padding:8px 14px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:0.85rem;cursor:pointer;white-space:nowrap">Set</button>
         </div>
       </div>
@@ -836,13 +836,13 @@ async function refresh() {
       document.querySelectorAll('[data-wp]').forEach(b =>
         b.classList.toggle('active', parseInt(b.dataset.wp) === d.winPoints));
       const wpPresets = [11, 15, 17, 21];
-      document.getElementById('wpCustom').value = wpPresets.includes(d.winPoints) ? '' : d.winPoints;
+      if (!_wpCustomDirty) document.getElementById('wpCustom').value = wpPresets.includes(d.winPoints) ? '' : d.winPoints;
     }
     if (d.hardcap !== undefined) {
       document.querySelectorAll('[data-hc]').forEach(b =>
         b.classList.toggle('active', parseInt(b.dataset.hc) === d.hardcap));
       const hcPresets = [15, 17, 21, 25];
-      document.getElementById('hcCustom').value = (d.hardcap === 0 || hcPresets.includes(d.hardcap)) ? '' : d.hardcap;
+      if (!_hcCustomDirty) document.getElementById('hcCustom').value = (d.hardcap === 0 || hcPresets.includes(d.hardcap)) ? '' : d.hardcap;
     }
     if (d.format !== undefined) {
       document.querySelectorAll('[data-fmt]').forEach(b =>
@@ -985,6 +985,7 @@ function applyCustomWinPoints() {
   if (!isNaN(v) && v >= 1 && v <= 99) {
     // Custom win score: only set win points, leave hardcap unchanged
     document.querySelectorAll('[data-wp]').forEach(b => b.classList.remove('active'));
+    _wpCustomDirty = false;
     fetch('/winpoints', {method:'POST', body: String(v)}).catch(()=>{});
   }
 }
@@ -995,7 +996,7 @@ async function setHardcap(val) {
 }
 function applyCustomHardcap() {
   const v = parseInt(document.getElementById('hcCustom').value);
-  if (!isNaN(v) && v >= 0 && v <= 99) setHardcap(v);
+  if (!isNaN(v) && v >= 0 && v <= 99) { _hcCustomDirty = false; setHardcap(v); }
 }
 async function setFormat(val) {
   document.querySelectorAll('[data-fmt]').forEach(b =>
@@ -1269,6 +1270,8 @@ let _brightnessDirty = false;
 let _boardIdDirty = false;
 let _serverIpDirty = false;
 let _teamsDirty = false;
+let _wpCustomDirty = false;
+let _hcCustomDirty = false;
 async function saveBoardId() {
   const val = document.getElementById('boardId').value.trim();
   if (val.length === 0) return;
