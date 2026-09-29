@@ -445,7 +445,9 @@ inline void showTimeoutDisplay(uint32_t remainingMs, int8_t team = -1) {
   FastLED.clear();
 
   CRGB timerCol = _timerTeamColor(team);
-  CRGB textCol  = CRGB(255, 120, 0);
+  // Green, not the old orange - that was nearly identical to team A's
+  // COLOR_A, which now also colors the countdown when team A calls it.
+  CRGB textCol  = CRGB(0, 210, 80);
 
   uint32_t totalSec = (remainingMs + 999) / 1000;
   int mins = (int)(totalSec / 60);
