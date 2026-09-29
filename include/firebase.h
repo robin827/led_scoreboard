@@ -18,6 +18,10 @@ static Preferences _prefs;
 static String   _channelCache      = "";
 static bool     _channelLoaded     = false;
 static uint16_t _pollIntervalSec   = 3;
+// See setChannel()/applyPendingChannel() below for why a channel change
+// doesn't take effect on _channelCache immediately.
+static String         _pendingChannel       = "";
+static volatile bool  _channelChangePending = false;
 
 // Shared SSL client — reused across read and write to avoid memory leaks
 static WiFiClientSecure* _client = nullptr;
@@ -38,13 +42,42 @@ inline void _resetClient() {
 
 // ── Channel (match ID) ────────────────────────────────────────────────────
 
+// Persists the new channel immediately, but deliberately does NOT update
+// _channelCache here — this runs on the portal's HTTP handler (Core 1),
+// while getChannel() is read from the Firebase task's own thread (Core 0),
+// at essentially any point in the middle of a poll tick. Applying the
+// change immediately let a tick already in progress pick up the NEW
+// channel's data (since getChannel() would suddenly return it mid-tick)
+// while still using the OLD channel's freshScoreRead/freshTimerRead/
+// lastSeenRemoteTimerType bookkeeping — e.g. an ongoing timeout on the new
+// channel would be seen as "some timer we don't recognize yet" and started
+// at full duration (apply()'s path) for one tick, before the *next* tick's
+// resync properly reset that bookkeeping and corrected it to the real
+// remaining time. Reported live as the board flashing the wrong (full)
+// countdown, then a bare score, then finally the correct countdown, all
+// within about a second of switching channels.
+// applyPendingChannel() — called by the Firebase task itself, atomically
+// with that same bookkeeping reset (see main.cpp's requestFirebaseResync()
+// handling) — is what actually makes the new channel visible to
+// getChannel(), so no read can ever see "new channel, stale bookkeeping".
 inline void setChannel(const String& matchId) {
-  _channelCache = matchId;
-  _channelLoaded = true;
+  _pendingChannel       = matchId;
+  _channelChangePending = true;
   _prefs.begin("firebase", false);
   _prefs.putString("channel", matchId);
   _prefs.end();
   Serial.printf("[Firebase] Channel set: %s\n", matchId.c_str());
+}
+
+// Called by the Firebase task (main.cpp's _firebaseRun()) as part of
+// handling a resync request. No-op (returns false) if no channel change is
+// pending, so it's safe to call on every resync regardless of cause.
+inline bool applyPendingChannel() {
+  if (!_channelChangePending) return false;
+  _channelChangePending = false;
+  _channelCache  = _pendingChannel;
+  _channelLoaded = true;
+  return true;
 }
 
 inline void loadPollInterval() {

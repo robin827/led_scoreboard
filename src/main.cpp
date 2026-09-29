@@ -103,6 +103,12 @@ static void _firebaseRun() {
     // exactly as if the task had just freshly started.
     if (_fbResyncRequested) {
       _fbResyncRequested      = false;
+      // Applies a pending channel change (if any) atomically with the
+      // bookkeeping reset below — see Firebase::setChannel()'s comment for
+      // why the channel itself isn't switched any earlier than this: doing
+      // so let a read already in progress this tick see the new channel's
+      // data through stale (pre-reset) bookkeeping.
+      Firebase::applyPendingChannel();
       didInitialRead          = false;
       lastWritten              = Score{};
       lastWrittenWP            = 255;
