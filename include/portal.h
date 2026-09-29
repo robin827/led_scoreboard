@@ -24,6 +24,10 @@ extern TaskHandle_t firebaseTaskHandle;
 extern volatile uint32_t firebaseLastHeartbeat;
 extern void startFirebaseTask();
 extern void stopFirebaseTask();
+// Cooperative "pick up new settings on your next read" nudge for a channel
+// switch — see its definition (main.cpp) for why this doesn't just stop/
+// start the task the way a mode switch does.
+extern void requestFirebaseResync();
 
 namespace Portal {
 
@@ -2494,16 +2498,25 @@ inline void init() {
   server->on("/firebase/channel", HTTP_POST, []() {
     if (!server->hasArg("plain")) { server->send(400, "text/plain", "Bad"); return; }
     String newChannel = server->arg("plain");
-    // Restart the Firebase task on an actual channel change (while it's
-    // running) so the new channel's first read goes through the same
+    // Nudge the running Firebase task to treat its next read as a fresh
+    // (re)connect, so the new channel's first read goes through the same
     // freshScoreRead/freshTimerRead "don't trust this blindly" gate as a
     // genuine boot/reconnect — setChannel() alone doesn't touch that task,
     // so a channel switch used to skip the gate entirely and could fire a
-    // leftover timer from the new channel immediately.
+    // leftover timer from the new channel immediately. Previously did this
+    // by stopping/restarting the task, but stopFirebaseTask()'s 1.5s grace
+    // period is far shorter than a single Firebase HTTPS call can
+    // legitimately take (no keep-alive — every call is its own TLS
+    // handshake), so a channel switch landing mid-request routinely forced
+    // a merely-busy (not stuck) task to be force-deleted, which could
+    // corrupt whatever BearSSL/lwIP state it was mid-syscall in and crash
+    // the board — reported live as an unexplained reboot after a channel
+    // switch. requestFirebaseResync() achieves the same fresh-read
+    // treatment cooperatively, entirely within the task's own loop, with no
+    // task-lifecycle risk at all.
     if (newChannel != Firebase::getChannel() && Mode::isFirebase()) {
-      stopFirebaseTask();
       Firebase::setChannel(newChannel);
-      startFirebaseTask();
+      requestFirebaseResync();
     } else {
       Firebase::setChannel(newChannel);
     }

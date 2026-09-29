@@ -28,6 +28,23 @@ volatile uint32_t firebaseLastHeartbeat = 0;
 // task itself right before it deletes itself.
 static volatile bool _fbStopRequested = false;
 static volatile bool _fbRunning       = false;
+// Cooperative "please treat the next read as a fresh (re)connect" request —
+// see requestFirebaseResync() below. Checked by the task itself at the top
+// of its own loop, unlike a channel switch used to go through
+// stopFirebaseTask()/startFirebaseTask(): that path's 1.5s cooperative-stop
+// grace period is far shorter than a single Firebase HTTPS call can
+// legitimately take (every call here does a full TLS handshake, no
+// keep-alive — readScore() alone times out at 10s), so a channel switch
+// landing mid-request routinely forced a still-running task to be deleted
+// out from under an in-flight WiFiClientSecure/BearSSL call. That's safe
+// for the *other* caller of stopFirebaseTask() (the 60s-stuck watchdog in
+// portal.h, and a genuine mode switch away from FIREBASE) since by then the
+// task really is wedged — but a channel switch doesn't know that, and
+// force-deleting a task that's merely busy (not stuck) risks corrupting
+// whatever BearSSL/lwIP state it was mid-syscall in, which can crash the
+// board - reported live as an unexplained reboot a little while after
+// switching channels.
+static volatile bool _fbResyncRequested = false;
 
 // Sleeps up to ms, but returns immediately when stopFirebaseTask() notifies.
 static void _fbSleep(uint32_t ms) { ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ms)); }
@@ -78,6 +95,30 @@ static void _firebaseRun() {
 
   while (!_fbStopRequested) {
     firebaseLastHeartbeat = millis();
+
+    // A channel switch (or anything else that wants this task to treat the
+    // next read as a fresh reconnect, without actually restarting the task
+    // — see _fbResyncRequested above) landed since the last iteration.
+    // Mirrors every local this function initializes at the top, so this is
+    // exactly as if the task had just freshly started.
+    if (_fbResyncRequested) {
+      _fbResyncRequested      = false;
+      didInitialRead          = false;
+      lastWritten              = Score{};
+      lastWrittenWP            = 255;
+      lastWrittenHC            = 255;
+      lastWrittenFmt           = 255;
+      lastWrittenFS            = 255;
+      lastWrittenFSSet         = 255;
+      lastWrittenNames         = TeamNames::Names{};
+      lastWrittenTimerType     = "";
+      lastSeenRemoteTimerType  = "";
+      freshScoreRead           = true;
+      freshTimerRead           = true;
+      lastRead                 = 0;
+      consecutiveErrors        = 0;
+    }
+
     FD_MARK("WiFiMgr::tick");
     WiFiMgr::tick();
 
@@ -318,6 +359,16 @@ static void _firebaseRun() {
     FD_MARK("idle wait");
     _fbSleep(100);
   }
+}
+
+// Asks a running Firebase task to treat its next read as a fresh (re)connect
+// — e.g. after a channel switch — without stopping/restarting the task
+// itself. See _fbResyncRequested above for why this exists instead of just
+// calling stopFirebaseTask()+startFirebaseTask(). A no-op if the task isn't
+// running (e.g. not currently in FIREBASE mode); the caller is expected to
+// have already updated whatever state (like the channel) it wants picked up.
+void requestFirebaseResync() {
+  if (_fbRunning) _fbResyncRequested = true;
 }
 
 void firebaseTask(void*) {
