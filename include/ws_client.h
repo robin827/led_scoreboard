@@ -148,6 +148,8 @@ inline void pushState() {
   int8_t timerTeam = ScoreActions::activeTimerTeam();
   if (timerTeam >= 0) doc["timerTeam"] = (timerTeam == 0) ? "a" : "b";
   doc["teamTimers"] = true;
+  // Reset counter — the bridge logs a change as an event_history reset.
+  doc["resetCount"] = ScoreActions::resetCount();
 
   uint8_t setsPlayed = s.setA + s.setB;
   JsonArray ha = doc["histA"].to<JsonArray>();

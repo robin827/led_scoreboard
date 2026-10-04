@@ -13,6 +13,7 @@
 #include "portal.h"
 #include "espnow_handler.h"
 #include "score_persist.h"
+#include "event_history.h"
 
 Score currentScore;
 SemaphoreHandle_t scoreMutex = NULL;
@@ -93,6 +94,19 @@ static void _firebaseRun() {
   bool freshScoreRead = true;
   bool freshTimerRead = true;
 
+  // event_history baseline (see event_history.h): the score/timer Firebase
+  // held the last time this board and Firebase agreed — a later local change
+  // is logged as the difference from it. Changes read FROM Firebase move the
+  // baseline without logging anything (whoever wrote them logs their own).
+  // Not valid until the first successful read, so an NVS-restored score is
+  // never logged as freshly scored points.
+  bool     historyBaseValid  = false;
+  Score    lastLogged        = {};
+  String   lastLoggedTimer   = "";
+  uint32_t lastLoggedReset   = 0;
+  uint32_t lastHistoryFailMs = 0;
+  bool     historyFailed     = false;
+
   while (!_fbStopRequested) {
     firebaseLastHeartbeat = millis();
 
@@ -121,6 +135,9 @@ static void _firebaseRun() {
       lastSeenRemoteTimerType  = "";
       freshScoreRead           = true;
       freshTimerRead           = true;
+      historyBaseValid         = false;
+      lastLoggedTimer          = "";
+      historyFailed            = false;
       lastRead                 = 0;
       consecutiveErrors        = 0;
     }
@@ -195,6 +212,32 @@ static void _firebaseRun() {
         }
       }
 
+      // Log this board's own changes into event_history, once the matching
+      // score/timer write above has actually landed (so the log never runs
+      // ahead of the score it describes). Retried every 2s on failure.
+      uint32_t resetNow = ScoreActions::resetCount();
+      bool resetHappened = resetNow != lastLoggedReset;
+      bool scoreCommitted = local.scoreA == lastWritten.scoreA && local.scoreB == lastWritten.scoreB &&
+                            local.setA   == lastWritten.setA   && local.setB   == lastWritten.setB;
+      bool historyChanged = resetHappened ||
+                            local.scoreA != lastLogged.scoreA || local.scoreB != lastLogged.scoreB ||
+                            local.setA   != lastLogged.setA   || local.setB   != lastLogged.setB   ||
+                            localTimerStr != lastLoggedTimer;
+      if (didInitialRead && historyBaseValid && historyChanged && scoreCommitted &&
+          localTimerStr == lastWrittenTimerType &&
+          (!historyFailed || millis() - lastHistoryFailMs >= 2000)) {
+        FD_MARK("EventHistory::sync");
+        if (EventHistory::sync(lastLogged, lastLoggedTimer, local, localTimerStr, resetHappened)) {
+          lastLogged      = local;
+          lastLoggedTimer = localTimerStr;
+          lastLoggedReset = resetNow;
+          historyFailed   = false;
+        } else {
+          historyFailed     = true;
+          lastHistoryFailMs = millis();
+        }
+      }
+
       // Too many errors: pause 30s
       if (consecutiveErrors >= MAX_ERRORS) {
         Serial.println("[Firebase] Too many errors — pausing 30s");
@@ -262,12 +305,22 @@ static void _firebaseRun() {
             }
 
             lastWritten    = db;
+            lastLogged     = db;
             lastWrittenWP  = db.winPoints;
             lastWrittenHC  = db.hardcap;
             lastWrittenFmt = db.format;
             lastWrittenFS  = db.firstServer;
           }
           freshScoreRead = false;
+          if (!historyBaseValid) {
+            // Whatever the board shows now (Firebase's state if it was just
+            // applied, else its own) is the baseline — nothing to log yet.
+            SCORE_LOCK();
+            lastLogged = currentScore;
+            SCORE_UNLOCK();
+            lastLoggedReset  = ScoreActions::resetCount();
+            historyBaseValid = true;
+          }
         } else {
           consecutiveErrors++;
           Serial.printf("[Firebase] Error %d/%d\n", consecutiveErrors, MAX_ERRORS);
@@ -325,6 +378,9 @@ static void _firebaseRun() {
             if (remoteBareType != "break" && remoteTeam != ScoreActions::activeTimerTeam()) {
               ScoreActions::setTimerTeam(remoteTeam);
             }
+            // Someone else's timer (not just our own write read back) — they
+            // log it themselves, so it's baseline, not a local change.
+            if (remoteTimerType != lastWrittenTimerType) lastLoggedTimer = remoteTimerType;
             // Firebase just confirms what's already running locally - e.g.
             // the score block above already called startBreakTimer() this
             // very tick (setJustEnded), and this read (its own separate
@@ -354,6 +410,7 @@ static void _firebaseRun() {
               // started_at (= now) on the very next iteration and silently
               // shorten every other reader's view of this same timer.
               lastWrittenTimerType = remoteTimerType;
+              lastLoggedTimer      = remoteTimerType;
             }
             // Elapsed unknown (old data with no started_at, or the Date
             // header couldn't be parsed): don't start it here, and don't
@@ -364,6 +421,7 @@ static void _firebaseRun() {
             ScoreActions::apply(remoteTimerType.length() > 0 ? remoteTimerType.c_str() : "stoptimer");
             lastSeenRemoteTimerType = remoteTimerType;
             lastWrittenTimerType    = remoteTimerType;
+            lastLoggedTimer         = remoteTimerType;
           }
           freshTimerRead = false;
         }

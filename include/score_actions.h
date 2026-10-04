@@ -12,6 +12,11 @@ extern SemaphoreHandle_t scoreMutex;
 namespace ScoreActions {
 
 static volatile uint32_t _rotationCount   = 0;
+// Bumped on every "reset" command — lets the Firebase sync paths (main.cpp's
+// firebaseTask, and the manager server's bridge via the WS state's
+// resetCount) tell a real reset apart from a score that merely went to 0-0,
+// since a reset wipes match-<channel>/event_history (event_history.h).
+static volatile uint32_t _resetCount      = 0;
 static volatile bool     _timerActive      = false;
 static volatile uint32_t _timerStartMs     = 0;
 static volatile bool     _timeoutActive    = false;
@@ -172,6 +177,8 @@ inline const char* _splitTimerKey(const char* key, int8_t& team) {
   }
   return key ? key : "";
 }
+
+inline uint32_t resetCount() { return _resetCount; }
 
 inline bool isTimeoutActive() { return _timeoutActive; }
 inline uint32_t timeoutCountdownMs() {
@@ -401,7 +408,7 @@ inline bool apply(const char* cmd) {
     else { ok = currentScore.nextSet(); changed = ok; if (ok) didNextSet = true; }
   }
   else if (strcmp(cmd, "nextset") == 0) { ok = currentScore.nextSet(); changed = ok; if (ok) didNextSet = true; }
-  else if (strcmp(cmd, "reset")   == 0) { currentScore.reset(); ScoreLogger::reset(); ScorePersist::persistNowLocked(); }
+  else if (strcmp(cmd, "reset")   == 0) { currentScore.reset(); ScoreLogger::reset(); ScorePersist::persistNowLocked(); _resetCount++; }
   else { changed = false; ok = false; }
 
   if (didIncrement) {
