@@ -62,7 +62,30 @@ struct ServeInfo {
 inline bool isSetWon(const Score& score) {
   uint8_t hi = score.scoreA >= score.scoreB ? score.scoreA : score.scoreB;
   uint8_t lo = score.scoreA >= score.scoreB ? score.scoreB : score.scoreA;
+  if (score.hardcap > 0 && hi >= score.hardcap && hi > lo) return true;
   return hi >= score.winPoints && (hi - lo) >= 2;
+}
+
+// Sets of the match that are finished: the completed (nexted) ones, plus the
+// current one if it's already won but nobody has long-pressed to the next set
+// yet. Capped at 3 (histA/histB size). Set i (0-based) is histA/histB[i] for
+// i < setA+setB, the live scoreA/scoreB for the extra one.
+inline uint8_t finishedSetCount(const Score& s) {
+  uint8_t n = s.setA + s.setB + (isSetWon(s) ? 1 : 0);
+  return n > 3 ? 3 : n;
+}
+
+// Match over by the board's format: BO1 after 1 set, 2 sets after 2, BO3 once
+// a team has 2 — counting a won-but-not-nexted current set, so the end is
+// seen on the winning point itself, not only after a final long-press.
+inline bool isMatchOver(const Score& s) {
+  uint8_t a = s.setA, b = s.setB;
+  if (isSetWon(s)) { if (s.scoreA > s.scoreB) a++; else b++; }
+  switch (s.format) {
+    case 0:  return a + b >= 1;
+    case 1:  return a + b >= 2;
+    default: return a >= 2 || b >= 2;
+  }
 }
 
 inline ServeInfo getServeInfo(const Score& score) {

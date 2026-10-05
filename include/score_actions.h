@@ -417,14 +417,10 @@ inline bool apply(const char* cmd) {
     }
   }
   if (didNextSet) {
-    // BO1 (0): no timer. 2sets (1): always. BO3 (2): only if match not over.
-    bool startTimer = false;
-    uint8_t fmt = currentScore.format;
-    if (fmt == 1) {
-      startTimer = true;
-    } else if (fmt == 2) {
-      startTimer = (currentScore.setA < 2 && currentScore.setB < 2);
-    }
+    // Break between sets only — none once the match is over (BO1 never, 2
+    // sets after the first, BO3 until someone has 2); the end-of-match
+    // summary (main.cpp) takes over instead.
+    bool startTimer = !isMatchOver(currentScore);
     if (startTimer) {
       _timerActive  = true;
       _timerStartMs = millis();

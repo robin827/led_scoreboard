@@ -296,7 +296,9 @@ static void _firebaseRun() {
             uint32_t preexistingBreakElapsed = ScoreActions::breakTimerElapsedMs();
 
             ScoreActions::applyFromDatabase(db);
-            if (setJustEnded) {
+            // No break after the match's last set — the end-of-match
+            // summary takes over instead.
+            if (setJustEnded && !isMatchOver(db)) {
               if (breakAlreadyRunning) {
                 ScoreActions::applyTimerWithElapsed("break", preexistingBreakElapsed);
               } else {
@@ -632,7 +634,7 @@ void loop() {
 
   if (timerActive) {
     uint32_t now = millis();
-    if (now - lastTimerUpdate >= 250) {
+    if (now - lastTimerUpdate >= 33) {
       lastTimerUpdate = now;
       SCORE_LOCK();
       LED::showBreakTimer(timerMs, true);
@@ -749,6 +751,43 @@ void loop() {
     SCORE_UNLOCK();
   }
   prevIntroActive = introActive;
+
+  // End-of-match summary (LED::showMatchSummary): once isMatchOver() has held
+  // for MATCH_END_HOLD_MS — so the winning point is seen first, and a
+  // mistaken last point can still be undone before the summary takes over —
+  // and nothing else owns the display. State-derived like the marquee: it
+  // ends by itself on reset or a correction that un-ends the match. Restarts
+  // from "SET 1" whenever it resumes (e.g. after a timeout).
+  static constexpr uint32_t MATCH_END_HOLD_MS = 3000;
+  static bool     matchOverSeen    = false;
+  static uint32_t matchOverSinceMs = 0;
+  static bool     prevSummary      = false;
+  static uint32_t summaryStartMs   = 0;
+  static uint32_t lastSummaryFrame = 0;
+
+  SCORE_LOCK();
+  bool matchOver = isMatchOver(currentScore);
+  SCORE_UNLOCK();
+  if (!matchOver)          matchOverSeen = false;
+  else if (!matchOverSeen) { matchOverSeen = true; matchOverSinceMs = millis(); }
+
+  bool otherDisplay = timeoutActive || medicalActive || timerActive || serverSelect || introActive;
+  bool summary = matchOver && !otherDisplay && millis() - matchOverSinceMs >= MATCH_END_HOLD_MS;
+  if (summary) {
+    uint32_t now = millis();
+    if (!prevSummary) summaryStartMs = now;
+    if (!prevSummary || now - lastSummaryFrame >= 16) {  // ~60 fps for smooth fades
+      lastSummaryFrame = now;
+      SCORE_LOCK();
+      LED::showMatchSummary(currentScore, now - summaryStartMs);
+      SCORE_UNLOCK();
+    }
+  } else if (prevSummary && !otherDisplay) {
+    SCORE_LOCK();
+    LED::update(currentScore);
+    SCORE_UNLOCK();
+  }
+  prevSummary = summary;
 
   static uint32_t lastLog = 0;
   if (millis() - lastLog > 10000) {

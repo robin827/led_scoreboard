@@ -16,11 +16,22 @@ namespace LED {
 // Main panel: 24×8 = 192 LEDs. Extension panel: 24×4 = 96 LEDs. Total: 288.
 static constexpr int TOTAL_LEDS = 288;
 
+// Every draw function renders into _leds (the canvas) and hands it to
+// _present(), which builds _out — what FastLED actually sends — from it,
+// fading between scenes (see "Scene transitions" below).
 static CRGB        _leds[TOTAL_LEDS];
+static CRGB        _out[TOTAL_LEDS];
+static CRGB        _last[TOTAL_LEDS];  // canvas as of the last _present()
+static CRGB        _prev[TOTAL_LEDS];  // outgoing scene, frozen while it fades out
 static Preferences _prefs;
 
 static const CRGB COLOR_A = CRGB(255, 100, 0);
 static const CRGB COLOR_B = CRGB::Cyan;
+// Neutral text (labels, timers, separators): green rather than white/grey —
+// about as readable (the eye is most sensitive to green) for roughly half the
+// LED current of a grey, which lights all three channels.
+static const CRGB TEXT_GREEN     = CRGB(0, 210, 80);
+static const CRGB TEXT_GREEN_DIM = CRGB(0, 120, 45);  // secondary: "VS", score dash
 
 // ─── Coordinate mapping (24×12 extended) ─────────────────────────────────────
 // Original 24×8 panel: column-major zigzag, bottom-right origin (LEDs 0–191).
@@ -63,7 +74,7 @@ inline void drawDigit(int d, int sx, int sy, CRGB col) {
     for (int x = 0; x < 4; x++)
       if (DIGITS[d][y][x]) {
         int px = sx + x, py = sy + y;
-        if (px >= 0 && px < Config::NUM_COLS && py >= 0 && py < Config::NUM_ROWS)
+        if (px >= 0 && px < Config::NUM_COLS && py >= 0 && py < (int)(Config::NUM_ROWS + 4))
           _leds[xy(px, py)] = col;
       }
 }
@@ -160,6 +171,217 @@ inline void drawSetDigitSm(int d, int sx, int sy, CRGB col) {
   }
 }
 
+// ─── Scene transitions ───────────────────────────────────────────────────────
+// Each frame is presented with a scene key — which screen it is (score,
+// "timeout for team A", break...), not its content. A new key fades the whole
+// old frame out, then the new one in, TRANSITION_FADE_MS each way. Within a
+// scene, draw functions register digit regions (_region(), fixed slot per
+// digit position): only a slot whose content changed fades, inside its own
+// rectangle, while the rest of the frame (serve dots, scrolling text...) stays
+// live. Same rules for both: a change arriving mid-fade-out only replaces what
+// fades in next; the old content coming back before it's gone (e.g. a
+// one-frame score redraw during the end-of-match summary, or a +1 undone
+// straight away) fades straight back in from where it was.
+
+static constexpr uint32_t TRANSITION_FADE_MS  = 180;
+static constexpr uint16_t TIMER_DIGIT_FADE_MS = 120;  // countdowns: digit not dim for long every second
+
+static constexpr uint32_t SCENE_BLANK   = 0;
+static constexpr uint32_t SCENE_SCORE   = 1u << 28;
+static constexpr uint32_t SCENE_TIMEOUT = 2u << 28;
+static constexpr uint32_t SCENE_MEDICAL = 3u << 28;
+static constexpr uint32_t SCENE_BREAK   = 4u << 28;
+static constexpr uint32_t SCENE_SLEEP   = 5u << 28;
+static constexpr uint32_t SCENE_PROMPT  = 6u << 28;
+static constexpr uint32_t SCENE_INTRO   = 7u << 28;
+static constexpr uint32_t SCENE_SUMMARY = 8u << 28;
+
+// Fade level (0..255) for linear progress p (0 = dark, 1 = full). Smootherstep
+// so it eases out of and into black instead of starting/stopping abruptly,
+// then gamma 2.2 so the brightness change looks even to the eye — a linear
+// pixel ramp seems to jump at the dark end and crawl at the bright end.
+// Recomputed every frame (~60 fps) rather than stepped; FastLED's temporal
+// dithering smooths the low end even at the usual low panel brightness.
+inline uint8_t _fadeLevel(float p) {
+  p = constrain(p, 0.0f, 1.0f);
+  float e = p * p * p * (p * (p * 6.0f - 15.0f) + 10.0f);
+  return (uint8_t)(powf(e, 2.2f) * 255.0f + 0.5f);
+}
+
+enum _TransPhase : uint8_t { TR_IDLE, TR_OUT, TR_IN };
+static _TransPhase _trPhase    = TR_IDLE;
+static uint32_t    _shownKey   = SCENE_BLANK;  // scene shown, or next to fade in
+static uint32_t    _prevKey    = SCENE_BLANK;  // scene fading out (TR_OUT)
+static float       _trFrom     = 1.0f;         // progress at _trStartMs
+static uint32_t    _trStartMs  = 0;
+static uint32_t    _lastShowMs = 0;
+
+inline float _trProgress(uint32_t now) {
+  float d = (float)(now - _trStartMs) / TRANSITION_FADE_MS;
+  return _trPhase == TR_OUT ? _trFrom - d : _trFrom + d;
+}
+
+// Digit regions. Slot = fixed digit position within a scene (score: 0/1 A
+// tens/units, 2/3 B tens/units, 4/5 set digits; timers: 0 minutes, 1/2
+// seconds); key = what's drawn there (0 = nothing).
+static constexpr int MAX_REGIONS = 6;
+struct _Rect {  // inclusive; x1 < x0 = empty
+  int8_t x0, y0, x1, y1;
+  _Rect() : x0(0), y0(0), x1(-1), y1(-1) {}
+  _Rect(int a, int b, int c, int d) : x0((int8_t)a), y0((int8_t)b), x1((int8_t)c), y1((int8_t)d) {}
+};
+struct _Region { uint32_t key = 0; _Rect r; uint16_t durMs = TRANSITION_FADE_MS; };
+struct _RegionFade {
+  uint32_t    key = 0, prevKey = 0;  // shown (or next to fade in) / fading out
+  _Rect       r;                     // rect of what `key` draws
+  _Rect       fade;                  // rect being faded (old ∪ new)
+  _TransPhase phase = TR_IDLE;
+  float       from = 1.0f;
+  uint32_t    startMs = 0;
+  uint16_t    durMs = TRANSITION_FADE_MS;
+};
+static _Region     _reqReg[MAX_REGIONS];   // registered by the frame being drawn
+static _RegionFade _regFade[MAX_REGIONS];  // what each slot shows / is fading
+static CRGB        _regPrev[TOTAL_LEDS];   // outgoing digits (inside fade rects only)
+
+inline bool _rectEmpty(const _Rect& r) { return r.x1 < r.x0; }
+inline bool _inRect(const _Rect& r, int x, int y) { return x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1; }
+inline _Rect _union(const _Rect& a, const _Rect& b) {
+  if (_rectEmpty(a)) return b;
+  if (_rectEmpty(b)) return a;
+  return { (int8_t)min(a.x0, b.x0), (int8_t)min(a.y0, b.y0), (int8_t)max(a.x1, b.x1), (int8_t)max(a.y1, b.y1) };
+}
+
+inline void _region(int slot, uint32_t key, int x, int y, int w, int h, uint16_t durMs) {
+  _Region& r = _reqReg[slot];
+  r.key   = key;
+  r.r     = { (int8_t)max(x, 0), (int8_t)max(y, 0),
+              (int8_t)min(x + w - 1, (int)Config::NUM_COLS - 1),
+              (int8_t)min(y + h - 1, (int)Config::NUM_ROWS + 3) };
+  r.durMs = durMs;
+}
+inline uint32_t _glyphKey(int d, int x, int y) {
+  return 1u | ((uint32_t)(d & 0x7F) << 1) | ((uint32_t)(x & 0xFF) << 8) | ((uint32_t)(y & 0xFF) << 16);
+}
+
+// Starts / redirects a slot's fade when its content changed (same scene).
+inline void _updateRegion(int i, uint32_t now) {
+  _Region& r = _reqReg[i];
+  _RegionFade& f = _regFade[i];
+  if (r.key == f.key) return;
+  float p = (f.phase == TR_IDLE) ? 1.0f
+          : (float)(now - f.startMs) / f.durMs * (f.phase == TR_OUT ? -1.0f : 1.0f) + f.from;
+  if (f.phase == TR_OUT && r.key == f.prevKey) {
+    f.phase = TR_IN; f.from = max(p, 0.0f); f.startMs = now;
+  } else {
+    bool keepSnap = (f.phase == TR_OUT);   // old digit already captured
+    _Rect old = keepSnap ? f.fade : _Rect{};
+    f.fade = _union(f.phase == TR_IDLE ? f.r : f.fade, r.r);
+    for (int y = f.fade.y0; y <= f.fade.y1; y++)
+      for (int x = f.fade.x0; x <= f.fade.x1; x++)
+        if (!keepSnap || !_inRect(old, x, y)) _regPrev[xy(x, y)] = _last[xy(x, y)];
+    if (!keepSnap) {
+      f.prevKey = f.key; f.phase = TR_OUT; f.from = p; f.startMs = now; f.durMs = r.durMs;
+    }
+  }
+  f.key = r.key;
+  f.r   = r.r;
+}
+
+// Advances a slot's fade; returns its level, or -1 when idle.
+inline int _regionLevel(_RegionFade& f, uint32_t now) {
+  if (f.phase == TR_IDLE) return -1;
+  float d = (float)(now - f.startMs) / f.durMs;
+  if (f.phase == TR_OUT) {
+    float p = f.from - d;
+    if (p > 0.0f) return _fadeLevel(p);
+    f.phase = TR_IN; f.from = 0.0f; f.startMs = now;
+    return 0;
+  }
+  float p = f.from + d;
+  if (p >= 1.0f) { f.phase = TR_IDLE; return -1; }
+  return _fadeLevel(p);
+}
+
+inline bool _anyFading() {
+  if (_trPhase != TR_IDLE) return true;
+  for (int i = 0; i < MAX_REGIONS; i++) if (_regFade[i].phase != TR_IDLE) return true;
+  return false;
+}
+
+// New frame: blank canvas, no digit regions until the draw registers them.
+inline void _clear() {
+  fill_solid(_leds, TOTAL_LEDS, CRGB::Black);
+  for (int i = 0; i < MAX_REGIONS; i++) _reqReg[i] = _Region{};
+}
+
+inline void _scaleInto(CRGB* dst, const CRGB* src, uint8_t level) {
+  for (int i = 0; i < TOTAL_LEDS; i++) { dst[i] = src[i]; dst[i].nscale8(level); }
+}
+
+// Show the canvas as scene `key`, fading if the scene changed.
+inline void _present(uint32_t key) {
+  uint32_t now = millis();
+  if (key != _shownKey) {
+    float p = (_trPhase == TR_IDLE) ? 1.0f : _trProgress(now);
+    if (_trPhase == TR_OUT) {
+      if (key == _prevKey) { _trPhase = TR_IN; _trFrom = max(p, 0.0f); _trStartMs = now; }
+    } else if (_shownKey == SCENE_BLANK) {
+      _trPhase = TR_IN; _trFrom = 0.0f; _trStartMs = now;  // nothing to fade out
+    } else {
+      memcpy(_prev, _last, sizeof(_prev));
+      _prevKey = _shownKey;
+      _trPhase = TR_OUT; _trFrom = p; _trStartMs = now;
+    }
+    _shownKey = key;
+    // The whole frame fades — digit slots just adopt the new scene's digits.
+    for (int i = 0; i < MAX_REGIONS; i++) {
+      _regFade[i] = _RegionFade{};
+      _regFade[i].key = _reqReg[i].key;
+      _regFade[i].r   = _reqReg[i].r;
+    }
+  } else if (_trPhase == TR_IDLE) {
+    for (int i = 0; i < MAX_REGIONS; i++) _updateRegion(i, now);
+  }
+
+  float p = 1.0f;
+  if (_trPhase == TR_OUT) {
+    p = _trProgress(now);
+    if (p <= 0.0f) { _trPhase = TR_IN; _trFrom = 0.0f; _trStartMs = now; p = 0.0f; }
+  } else if (_trPhase == TR_IN) {
+    p = _trProgress(now);
+    if (p >= 1.0f) _trPhase = TR_IDLE;
+  }
+
+  memcpy(_last, _leds, sizeof(_last));
+  if      (_trPhase == TR_OUT) _scaleInto(_out, _prev, _fadeLevel(p));
+  else if (_trPhase == TR_IN)  _scaleInto(_out, _leds, _fadeLevel(p));
+  else {
+    memcpy(_out, _leds, sizeof(_out));
+    for (int i = 0; i < MAX_REGIONS; i++) {
+      _RegionFade& f = _regFade[i];
+      bool out = (f.phase == TR_OUT);
+      int level = _regionLevel(f, now);
+      if (level < 0) continue;
+      const CRGB* src = out ? _regPrev : _leds;
+      for (int y = f.fade.y0; y <= f.fade.y1; y++)
+        for (int x = f.fade.x0; x <= f.fade.x1; x++) {
+          int idx = xy(x, y);
+          _out[idx] = src[idx];
+          _out[idx].nscale8((uint8_t)level);
+        }
+    }
+  }
+  _lastShowMs = now;
+  FD_SHOW();
+}
+
+// Boot animation only: straight to the panel, no transition.
+inline void _showRaw() {
+  memcpy(_out, _leds, sizeof(_out));
+  FD_SHOW();
+}
+
 // ─── Breathing animation state ───────────────────────────────────────────────
 
 static Score    _animScore;
@@ -230,29 +452,56 @@ inline void _applyServeSmall(const Score& score, uint8_t breathe) {
 
 // ─── Score render ─────────────────────────────────────────────────────────────
 
-inline void _updateSmall(const Score& score, uint8_t breathe) {
+// Big digit that fades on its own when it changes: slot < 0 = no fade region.
+inline void _fadeDigit(int slot, int d, int x, int y, CRGB col, uint16_t durMs) {
+  drawDigit(d, x, y, col);
+  if (slot >= 0) _region(slot, _glyphKey(d, x, y), x, y, 4, 7, durMs);
+}
+
+// Big A and B scores, digits from row y down (7 rows). slotBase >= 0: each
+// digit gets its own fade slot (A tens, A units, B tens, B units).
+inline void _drawScorePair(uint8_t scoreA, uint8_t scoreB, int y, int slotBase = -1) {
+  auto slot = [&](int i) { return slotBase < 0 ? -1 : slotBase + i; };
   // Scores < 10: single digit centered in the two-digit zone (x=2..10 for A, x=13..21 for B).
   // Scores >= 10: two digits as usual.
   // Digit "1" visual center is 0.5px right; shift left by 1 to compensate.
-  if (score.scoreA < 10) {
-    int d = score.scoreA;
-    drawDigit(d, 5, 0, COLOR_A);
+  if (scoreA < 10) {
+    _fadeDigit(slot(1), scoreA, 5, y, COLOR_A, TRANSITION_FADE_MS);
   } else {
-    int dAs_t = score.scoreA / 10, dAs_u = score.scoreA % 10;
-    drawDigit(dAs_t, 2 + (dAs_t == 1 ? -1 : 0), 0, COLOR_A);
-    drawDigit(dAs_u, 7 + (dAs_u == 1 ? -1 : 0), 0, COLOR_A);
+    int dAs_t = scoreA / 10, dAs_u = scoreA % 10;
+    _fadeDigit(slot(0), dAs_t, 2 + (dAs_t == 1 ? -1 : 0), y, COLOR_A, TRANSITION_FADE_MS);
+    _fadeDigit(slot(1), dAs_u, 7 + (dAs_u == 1 ? -1 : 0), y, COLOR_A, TRANSITION_FADE_MS);
   }
-  if (score.scoreB < 10) {
-    int d = score.scoreB;
-    drawDigit(d, 15 + (d == 1 ? -1 : 0), 0, COLOR_B);
+  if (scoreB < 10) {
+    _fadeDigit(slot(3), scoreB, 15 + (scoreB == 1 ? -1 : 0), y, COLOR_B, TRANSITION_FADE_MS);
   } else {
-    drawDigit(score.scoreB / 10, 13, 0, COLOR_B);
-    drawDigit(score.scoreB % 10, 18, 0, COLOR_B);
+    _fadeDigit(slot(2), scoreB / 10, 13, y, COLOR_B, TRANSITION_FADE_MS);
+    _fadeDigit(slot(3), scoreB % 10, 18, y, COLOR_B, TRANSITION_FADE_MS);
   }
+}
+
+// M:SS countdown on rows 0..6, each digit in its own fade slot (0 minutes,
+// 1/2 seconds) — shared by the break, timeout and medical screens.
+inline void _drawClock(uint32_t remainingMs, CRGB col, bool colonOn = true) {
+  uint32_t totalSec = (remainingMs + 999) / 1000;
+  int mins = (int)(totalSec / 60);
+  int secs = (int)(totalSec % 60);
+  _fadeDigit(0, mins,      3,  0, col, TIMER_DIGIT_FADE_MS);
+  if (colonOn) { _leds[xy(9, 2)] = col; _leds[xy(9, 5)] = col; }
+  _fadeDigit(1, secs / 10, 12, 0, col, TIMER_DIGIT_FADE_MS);
+  _fadeDigit(2, secs % 10, 18, 0, col, TIMER_DIGIT_FADE_MS);
+}
+
+inline void _updateSmall(const Score& score, uint8_t breathe, bool fadeSlots = false) {
+  _drawScorePair(score.scoreA, score.scoreB, 0, fadeSlots ? 0 : -1);
 
   // Set scores: 3×4 digit glyphs in extension rows (y=8..11)
   drawSetDigitSm(score.setA, 5,  Config::NUM_ROWS, COLOR_A);
   drawSetDigitSm(score.setB, 16, Config::NUM_ROWS, COLOR_B);
+  if (fadeSlots) {
+    _region(4, _glyphKey(score.setA, 5,  Config::NUM_ROWS), 5,  Config::NUM_ROWS, 3, 4, TRANSITION_FADE_MS);
+    _region(5, _glyphKey(score.setB, 16, Config::NUM_ROWS), 16, Config::NUM_ROWS, 3, 4, TRANSITION_FADE_MS);
+  }
 
   _applyServeSmall(score, breathe);
   if (_isRotationPoint(score)) _drawRotationLoop();
@@ -261,7 +510,7 @@ inline void _updateSmall(const Score& score, uint8_t breathe) {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 inline void init() {
-  FastLED.addLeds<WS2812B, Config::PIN, GRB>(_leds, TOTAL_LEDS);
+  FastLED.addLeds<WS2812B, Config::PIN, GRB>(_out, TOTAL_LEDS);
 
   _prefs.begin("led", false);
   uint8_t brightness = _prefs.getUChar("brightness", Config::BRIGHTNESS);
@@ -282,9 +531,9 @@ inline void bootAnimation() {
   const float PI_F = 3.14159265f;
 
   // Brief white spark at center before explosion
-  FastLED.clear();
+  _clear();
   _leds[xy((int)roundf(cx), (int)roundf(cy))] = CRGB::White;
-  FD_SHOW();
+  _showRaw();
   delay(80);
 
   const int   STEPS     = 35;
@@ -310,18 +559,18 @@ inline void bootAnimation() {
         }
       }
     }
-    FD_SHOW();
+    _showRaw();
     delay(22);
   }
 
   for (int step = 0; step < 20; step++) {
     for (int i = 0; i < TOTAL_LEDS; i++) _leds[i].nscale8(195);
-    FD_SHOW();
+    _showRaw();
     delay(18);
   }
 
-  FastLED.clear();
-  FD_SHOW();
+  _clear();
+  _showRaw();
 }
 
 inline void setBrightness(uint8_t brightness) {
@@ -363,9 +612,9 @@ inline void update(const Score& score) {
   _redrawPending = false;
   _animScore = score;
   _timerMode = false;
-  FastLED.clear();
-  _updateSmall(score, _breatheFactor());
-  FD_SHOW();
+  _clear();
+  _updateSmall(score, _breatheFactor(), true);
+  _present(SCENE_SCORE);
 }
 
 // loop() only: true once if an off-core update() asked for a redraw.
@@ -375,20 +624,23 @@ inline bool takePendingRedraw() {
   return true;
 }
 
-// Call from main loop at ~30 fps to animate serve pixels
+// Call from main loop: animates serve pixels at ~30 fps, and keeps a running
+// scene transition going at ~60 fps whatever the scene (the break timer, for
+// one, only redraws every 250ms).
 inline void tick() {
   uint32_t now = millis();
+  if (_anyFading() && now - _lastShowMs >= 16) _present(_shownKey);
   if (now - _lastTick < 33) return;
   _lastTick = now;
   if (_timerMode) return;
   _applyServeSmall(_animScore, _breatheFactor());
   if (_isRotationPoint(_animScore)) _drawRotationLoop();
-  FD_SHOW();
+  _present(SCENE_SCORE);
 }
 
 // Sleep animation: 4 LEDs centred (cols 10-13, row 5), yellow→cyan travelling wave
 inline void showSleepAnimation() {
-  FastLED.clear();
+  _clear();
   uint8_t phase = (uint8_t)(millis() / 10);  // 256 × 10 ms = 2.56 s cycle
   static const CRGB palette[4] = {
     CRGB(255, 255,   0),  // yellow
@@ -402,25 +654,17 @@ inline void showSleepAnimation() {
     col.nscale8(b);
     _leds[xy(10 + i, 5)] = col;
   }
-  FD_SHOW();
+  _present(SCENE_SLEEP);
 }
 
 // Break timer: M:SS with set badges
 inline void showBreakTimer(uint32_t remainingMs, bool colonOn) {
   _timerMode = true;
-  FastLED.clear();
-  uint32_t totalSec = (remainingMs + 999) / 1000;
-  int mins = (int)(totalSec / 60);
-  int secs = (int)(totalSec % 60);
-  CRGB col = CRGB(0, 210, 80);
-
-  drawDigit(mins,      3, 0, col);
-  if (colonOn) { _leds[xy(9, 2)] = col; _leds[xy(9, 5)] = col; }
-  drawDigit(secs / 10, 12, 0, col);
-  drawDigit(secs % 10, 18, 0, col);
+  _clear();
+  _drawClock(remainingMs, TEXT_GREEN, colonOn);
   drawSetDigitSm(_animScore.setA, 5,  Config::NUM_ROWS, COLOR_A);
   drawSetDigitSm(_animScore.setB, 16, Config::NUM_ROWS, COLOR_B);
-  FD_SHOW();
+  _present(SCENE_BREAK);
 }
 
 // ─── Timeout display ─────────────────────────────────────────────────────────
@@ -437,30 +681,23 @@ static const uint8_t _TG_U[5][3] = {{1,0,1},{1,0,1},{1,0,1},{1,0,1},{1,1,1}};
 inline CRGB _timerTeamColor(int8_t team) {
   if (team == 0) return COLOR_A;
   if (team == 1) return COLOR_B;
-  return CRGB(0, 210, 80);
+  return TEXT_GREEN;
 }
 
 inline void showTimeoutDisplay(uint32_t remainingMs, int8_t team = -1) {
   _timerMode = true;
-  FastLED.clear();
+  _clear();
 
   CRGB timerCol = _timerTeamColor(team);
   // Green, not the old orange - that was nearly identical to team A's
   // COLOR_A, which now also colors the countdown when team A calls it.
-  CRGB textCol  = CRGB(0, 210, 80);
-
-  uint32_t totalSec = (remainingMs + 999) / 1000;
-  int mins = (int)(totalSec / 60);
-  int secs = (int)(totalSec % 60);
+  CRGB textCol  = TEXT_GREEN;
 
   const uint8_t (*msg[7])[3] = {_TG_T,_TG_I,_TG_M,_TG_E,_TG_O,_TG_U,_TG_T};
   static const int8_t CHAR_X[7] = {0, 4, 8, 12, 18, 22, 26};
   static constexpr int TEXT_W = 29;
 
-  drawDigit(mins,      3, 0, timerCol);
-  _leds[xy(9, 2)] = timerCol; _leds[xy(9, 5)] = timerCol;
-  drawDigit(secs / 10, 12, 0, timerCol);
-  drawDigit(secs % 10, 18, 0, timerCol);
+  _drawClock(remainingMs, timerCol);
 
   const int COLS   = (int)Config::NUM_COLS;
   const int LOOP_W = TEXT_W + 5;  // 34
@@ -480,7 +717,7 @@ inline void showTimeoutDisplay(uint32_t remainingMs, int8_t team = -1) {
         }
     }
   }
-  FD_SHOW();
+  _present(SCENE_TIMEOUT | (uint32_t)(team + 1));
 }
 
 // ─── Medical timer display ────────────────────────────────────────────────────
@@ -492,23 +729,16 @@ static const uint8_t _TG_L[5][3] = {{1,0,0},{1,0,0},{1,0,0},{1,0,0},{1,1,1}};
 
 inline void showMedicalTimer(uint32_t remainingMs, int8_t team = -1) {
   _timerMode = true;
-  FastLED.clear();
+  _clear();
 
   CRGB timerCol = _timerTeamColor(team);
   CRGB textCol  = CRGB(255, 80, 80);
-
-  uint32_t totalSec = (remainingMs + 999) / 1000;
-  int mins = (int)(totalSec / 60);
-  int secs = (int)(totalSec % 60);
 
   const uint8_t (*msg[7])[3] = {_TG_M,_TG_E,_TG_D,_TG_I,_TG_C,_TG_A,_TG_L};
   static const int8_t CHAR_X[7] = {0, 4, 8, 12, 16, 20, 24};
   static constexpr int TEXT_W = 27;
 
-  drawDigit(mins,      3, 0, timerCol);
-  _leds[xy(9, 2)] = timerCol; _leds[xy(9, 5)] = timerCol;
-  drawDigit(secs / 10, 12, 0, timerCol);
-  drawDigit(secs % 10, 18, 0, timerCol);
+  _drawClock(remainingMs, timerCol);
 
   const int COLS   = (int)Config::NUM_COLS;
   const int LOOP_W = TEXT_W + 5;
@@ -528,7 +758,7 @@ inline void showMedicalTimer(uint32_t remainingMs, int8_t team = -1) {
         }
     }
   }
-  FD_SHOW();
+  _present(SCENE_MEDICAL | (uint32_t)(team + 1));
 }
 
 // ─── Pre-match "SERVE?" prompt ───────────────────────────────────────────────
@@ -555,11 +785,10 @@ inline void _drawGlyph3x5(const uint8_t (*g)[3], int sx, int sy, CRGB col) {
 
 inline void showServerPrompt() {
   _timerMode = true;
-  FastLED.clear();
+  _clear();
 
   const uint8_t (*msg[6])[3] = {_TG_S,_TG_E,_TG_R,_TG_V,_TG_E,_TG_Q};
-  static const CRGB TEXT_COL = CRGB(200, 200, 200);
-  for (int i = 0; i < 6; i++) _drawGlyph3x5(msg[i], 1 + i * 4, 1, TEXT_COL);
+  for (int i = 0; i < 6; i++) _drawGlyph3x5(msg[i], 1 + i * 4, 1, TEXT_GREEN);
 
   uint8_t b = _breatheFactor();
   CRGB colA = COLOR_A; colA.nscale8(qadd8(b, 40));
@@ -567,7 +796,7 @@ inline void showServerPrompt() {
   _drawGlyph3x5(_TG_A, 5,  (int)Config::NUM_ROWS - 1, colA);
   _drawGlyph3x5(_TG_B, 16, (int)Config::NUM_ROWS - 1, colB);
 
-  FD_SHOW();
+  _present(SCENE_PROMPT);
 }
 
 // ─── Pre-match team-name marquee ─────────────────────────────────────────────
@@ -578,12 +807,11 @@ inline void showServerPrompt() {
 
 inline void showTeamIntro(const TeamNames::Names& n) {
   _timerMode = true;
-  FastLED.clear();
+  _clear();
 
   const char* left  = n.teamA[0] ? n.teamA : "TEAM A";
   const char* right = n.teamB[0] ? n.teamB : "TEAM B";
   static const char* SEP = " VS ";
-  static const CRGB   SEP_COLOR = CRGB(150, 150, 150);
 
   int leftLen  = (int)strlen(left);
   int sepLen   = (int)strlen(SEP);
@@ -608,12 +836,67 @@ inline void showTeamIntro(const TeamNames::Names& n) {
 
     int cx = xOff;
     for (int i = 0; i < leftLen;  i++) { drawChar5x7(left[i],  cx, Y, COLOR_A);   cx += CHAR_W; }
-    for (int i = 0; i < sepLen;   i++) { drawChar5x7(SEP[i],   cx, Y, SEP_COLOR); cx += CHAR_W; }
+    for (int i = 0; i < sepLen;   i++) { drawChar5x7(SEP[i],   cx, Y, TEXT_GREEN_DIM); cx += CHAR_W; }
     for (int i = 0; i < rightLen; i++) { drawChar5x7(right[i], cx, Y, COLOR_B);   cx += CHAR_W; }
-    for (int i = 0; i < sepLen;   i++) { drawChar5x7(SEP[i],   cx, Y, SEP_COLOR); cx += CHAR_W; }
+    for (int i = 0; i < sepLen;   i++) { drawChar5x7(SEP[i],   cx, Y, TEXT_GREEN_DIM); cx += CHAR_W; }
   }
 
-  FD_SHOW();
+  // Keyed by the names, so new names mid-marquee fade over too.
+  uint32_t h = 5381;
+  for (const char* c = left;  *c; c++) h = h * 33 + (uint8_t)*c;
+  for (const char* c = right; *c; c++) h = h * 33 + (uint8_t)*c;
+  _present(SCENE_INTRO | (h & 0x0FFFFFFF));
+}
+
+// ─── End-of-match summary ────────────────────────────────────────────────────
+// Shown once isMatchOver() (score.h): for each finished set "SET n" and that
+// set's score, each faded in, held, faded out, looping forever (the scene
+// transition fades the live score out first). Purely a function of elapsedMs (time since the summary
+// started) and the score, so main.cpp just calls it every frame — and a score
+// correction during the summary shows up in it on the next frame.
+
+static constexpr uint32_t SUMMARY_FADE_MS   = TRANSITION_FADE_MS;
+static constexpr uint32_t SUMMARY_HOLD_MS   = 1500;
+static constexpr uint32_t SUMMARY_SCREEN_MS = SUMMARY_FADE_MS + SUMMARY_HOLD_MS + SUMMARY_FADE_MS;
+
+inline void showMatchSummary(const Score& s, uint32_t elapsedMs) {
+  _timerMode = true;
+  _clear();
+
+  uint8_t level = 255;
+  uint8_t sets = finishedSetCount(s);
+  if (sets == 0) {
+    _updateSmall(s, _breatheFactor());  // can't happen while isMatchOver()
+  } else {
+    uint32_t t      = elapsedMs;
+    uint32_t screen = (t / SUMMARY_SCREEN_MS) % (2u * sets);
+    uint32_t in     = t % SUMMARY_SCREEN_MS;
+    float p = (in < SUMMARY_FADE_MS)                   ? (float)in / SUMMARY_FADE_MS
+            : (in < SUMMARY_FADE_MS + SUMMARY_HOLD_MS) ? 1.0f
+            : (float)(SUMMARY_SCREEN_MS - in) / SUMMARY_FADE_MS;
+    level = _fadeLevel(p);
+
+    uint8_t set = (uint8_t)(screen / 2);
+    const int Y = 2;  // vertically centered in the 12-row canvas (rows 2..8)
+    if (screen % 2 == 0) {
+      // "SET" + set number, 5×7 font: x=0..16, number at 19..23 (full 24 cols).
+      drawChar5x7('S', 0,  Y, TEXT_GREEN);
+      drawChar5x7('E', 6,  Y, TEXT_GREEN);
+      drawChar5x7('T', 12, Y, TEXT_GREEN);
+      drawChar5x7((char)('1' + set), 19, Y, TEXT_GREEN);
+    } else {
+      bool live = set >= s.setA + s.setB;  // won but not yet nexted
+      uint8_t a = live ? s.scoreA : s.histA[set];
+      uint8_t b = live ? s.scoreB : s.histB[set];
+      _drawScorePair(a, b, Y);
+      _leds[xy(11, Y + 3)] = TEXT_GREEN_DIM;
+      _leds[xy(12, Y + 3)] = TEXT_GREEN_DIM;
+    }
+  }
+
+  if (level < 255)
+    for (int i = 0; i < TOTAL_LEDS; i++) _leds[i].nscale8(level);
+  _present(SCENE_SUMMARY);
 }
 
 } // namespace LED
