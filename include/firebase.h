@@ -8,6 +8,8 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <vector>
+#include <algorithm>
 #include "config.h"
 #include "score.h"
 #include "team_names.h"
@@ -38,6 +40,385 @@ inline WiFiClientSecure* _getClient() {
 inline void _resetClient() {
   delete _client;
   _client = nullptr;
+}
+
+// ── Account (Firebase Auth) ───────────────────────────────────────────────
+// The RTDB rules (scoreboard/database.rules.json) only accept a write to
+// match-<n> from a signed-in account that is an admin or whose org lists n in
+// orgs/<org>/channels; reads stay public. The board signs in with an org
+// account's email/password (ideally a dedicated boards account per org) and
+// sends the resulting ID token as ?auth= on every request. Its courts
+// (orgs/<org>/channels, every org's for an admin) feed the portal's court
+// picker.
+//
+// Same token flow as the Firebase client SDKs: the password is used once, for
+// signInWithPassword, and never stored — NVS keeps only the refresh token
+// ("firebase"/"rtok"), which is exchanged for a fresh 1h ID token 5 minutes
+// before expiry. Changing the account's password or disabling it in the
+// Firebase Console revokes the refresh token, which signs the boards out.
+//
+// Threading: everything that touches the tokens runs on the Firebase task
+// (Core 0) — tickAuth() at the top of its loop, _url() inside every request.
+// The portal (Core 1) only hands new credentials over in RAM
+// (_pendingEmail/_pendingPassword under _authMutex()) and raises
+// _credsChanged; what it shows comes from _authStatusJson/_courtsJson.
+
+static String   _idToken        = "";
+static String   _refreshToken   = "";
+static String   _email          = "";     // shown on the portal only
+static uint32_t _nextAuthAt     = 0;      // millis() of the next refresh (5 min before expiry, or retry)
+static bool     _authFailed     = false;  // last attempt failed — waiting out the retry delay
+static bool     _authBlocked    = false;  // refresh token revoked/rejected — wait for a new sign-in
+static volatile bool _credsChanged = true; // load the session from NVS on the first tick
+static bool     _hasPending     = false;  // _pendingEmail/_pendingPassword hold a portal sign-in/out
+static String   _pendingEmail   = "";
+static String   _pendingPassword = "";
+
+static String   _authStatusJson = "{\"state\":\"none\"}";
+static String   _courtsJson     = "[]";
+static uint32_t _courtsRev      = 0;
+
+static const char* _AUTH_SIGNIN_URL  = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=" FIREBASE_API_KEY;
+static const char* _AUTH_REFRESH_URL = "https://securetoken.googleapis.com/v1/token?key=" FIREBASE_API_KEY;
+
+inline SemaphoreHandle_t _authMutex() {
+  static SemaphoreHandle_t m = xSemaphoreCreateMutex();
+  return m;
+}
+
+// state: "none" (no account), "pending", "ok", "error"
+inline void _setAuthStatus(const char* state, const String& email, const String& error = "",
+                           const String& org = "", const String& orgName = "",
+                           const String& role = "") {
+  JsonDocument doc;
+  doc["state"] = state;
+  if (email.length())    doc["email"]   = email;
+  if (error.length())    doc["error"]   = error;
+  if (org.length())      doc["org"]     = org;
+  if (orgName.length())  doc["orgName"] = orgName;
+  if (role.length())     doc["role"]    = role;
+  String json;
+  serializeJson(doc, json);
+  xSemaphoreTake(_authMutex(), portMAX_DELAY);
+  _authStatusJson = json;
+  xSemaphoreGive(_authMutex());
+}
+
+inline void _setCourts(const String& json) {
+  xSemaphoreTake(_authMutex(), portMAX_DELAY);
+  if (json != _courtsJson) { _courtsJson = json; _courtsRev++; }
+  xSemaphoreGive(_authMutex());
+}
+
+inline String getAuthStatusJson() {
+  xSemaphoreTake(_authMutex(), portMAX_DELAY);
+  String s = _authStatusJson;
+  xSemaphoreGive(_authMutex());
+  return s;
+}
+
+inline String getCourtsJson() {
+  xSemaphoreTake(_authMutex(), portMAX_DELAY);
+  String s = _courtsJson;
+  xSemaphoreGive(_authMutex());
+  return s;
+}
+
+inline uint32_t getCourtsRev() { return _courtsRev; }
+
+// Portal side (Core 1): hand a sign-in (or, with an empty email, a sign-out)
+// to the task. Kept in RAM only — if the board reboots before the task runs
+// (e.g. not in FIREBASE mode), it has to be entered again.
+inline void setCredentials(const String& email, const String& password) {
+  xSemaphoreTake(_authMutex(), portMAX_DELAY);
+  _pendingEmail    = email;
+  _pendingPassword = password;
+  _hasPending      = true;
+  xSemaphoreGive(_authMutex());
+  _credsChanged = true;
+  if (email.length()) _setAuthStatus("pending", email);
+  Serial.printf("[Firebase] Account set: %s\n", email.length() ? email.c_str() : "(none)");
+}
+
+// URL of match-<channel><subPath>.json, with the ID token when signed in.
+// `query` is any extra query string without the leading '?'.
+inline String _url(const String& channel, const String& subPath, const char* query = nullptr) {
+  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + subPath + ".json";
+  char sep = '?';
+  if (query && query[0]) { url += sep; url += query; sep = '&'; }
+  if (_idToken.length()) { url += sep; url += "auth="; url += _idToken; }
+  return url;
+}
+
+// A 401 on a write means the ID token expired or was revoked — refresh on the
+// next tick instead of waiting for the scheduled renewal.
+inline void _checkAuthCode(int code) {
+  if (code == 401 && _idToken.length()) {
+    Serial.println("[Firebase] Write rejected (401) — refreshing the token");
+    if (!_authFailed) _nextAuthAt = millis();
+  } else if (code == 401) {
+    Serial.println("[Firebase] Write rejected (401) — no account set, see portal Settings → Firebase");
+  }
+}
+
+inline int _httpsJson(const char* method, const String& url, const String& body, JsonDocument& out,
+                      JsonDocument* filter = nullptr, const char* contentType = "application/json") {
+  HTTPClient http;
+  http.setTimeout(10000);
+  http.setReuse(false);
+  if (!http.begin(*_getClient(), url)) { _resetClient(); return -1; }
+  int code;
+  if (strcmp(method, "POST") == 0) {
+    http.addHeader("Content-Type", contentType);
+    code = http.POST(body);
+  } else {
+    code = http.GET();
+  }
+  if (code > 0) {
+    String payload = http.getString();
+    if (filter) deserializeJson(out, payload, DeserializationOption::Filter(*filter));
+    else        deserializeJson(out, payload);
+  }
+  http.end();
+  if (code < 0) _resetClient();
+  return code;
+}
+
+inline void _saveSession() {
+  _prefs.begin("firebase", false);
+  _prefs.putString("email", _email);
+  _prefs.putString("rtok", _refreshToken);
+  _prefs.remove("pass");  // stored by the unreleased first version of this
+  _prefs.end();
+}
+
+inline void _clearSession() {
+  _idToken = "";
+  _refreshToken = "";
+  _prefs.begin("firebase", false);
+  _prefs.remove("rtok");
+  _prefs.remove("pass");
+  _prefs.end();
+}
+
+struct _Court { String org; String orgName; int court; int channel; };
+
+// Appends one org's courts (orgs/<org>/channels: {"<channel>": <court>}, which
+// Firebase returns as an array indexed by channel when the keys are small
+// numbers — both shapes handled) sorted by court.
+inline void _collectCourts(const char* orgId, JsonVariantConst org, std::vector<_Court>& out) {
+  String name = org["name"] | orgId;
+  size_t first = out.size();
+  JsonVariantConst ch = org["channels"];
+  if (ch.is<JsonArrayConst>()) {
+    int i = 0;
+    for (JsonVariantConst v : ch.as<JsonArrayConst>()) {
+      if (!v.isNull()) out.push_back({orgId, name, v.as<int>(), i});
+      i++;
+    }
+  } else if (ch.is<JsonObjectConst>()) {
+    for (JsonPairConst kv : ch.as<JsonObjectConst>()) {
+      out.push_back({orgId, name, kv.value().as<int>(), atoi(kv.key().c_str())});
+    }
+  }
+  std::sort(out.begin() + first, out.end(),
+            [](const _Court& a, const _Court& b) { return a.court < b.court; });
+}
+
+inline void _authRetryLater(const String& msg) {
+  _authFailed = true;
+  _nextAuthAt = millis() + 30000;
+  _setAuthStatus("error", _email, msg);
+}
+
+// After a new ID token: accounts/<uid> → orgs → courts. Runs on every
+// refresh, so org/court changes in the console reach the board within an hour.
+inline bool _loadAccount(const String& uid) {
+  // Org and role. The account may read only its own entry.
+  JsonDocument account;
+  int code = _httpsJson("GET", String(FIREBASE_DATABASE_URL) + "/accounts/" + uid + ".json?auth=" + _idToken,
+                        "", account);
+  String org  = account["org"]  | "";
+  String role = account["role"] | "";
+  bool isAdmin = role == "admin";
+  if (code != 200 || (org.isEmpty() && !isAdmin)) {
+    String msg = code == 200 ? "Account has no org (accounts/" + uid + ")" : "Could not read account (HTTP " + String(code) + ")";
+    Serial.printf("[Firebase] %s\n", msg.c_str());
+    _authRetryLater(msg);
+    _setCourts("[]");
+    return false;  // token kept: writes are refused anyway without an org
+  }
+
+  // Courts: own org first, then (admins only) every other org by ID.
+  JsonDocument orgs;
+  code = _httpsJson("GET", String(FIREBASE_DATABASE_URL) + "/orgs.json", "", orgs);
+  String orgName = org;
+  std::vector<_Court> courts;
+  if (code == 200) {
+    if (org.length()) {
+      orgName = orgs[org]["name"] | org.c_str();
+      _collectCourts(org.c_str(), orgs[org], courts);
+    }
+    if (isAdmin) {
+      std::vector<String> ids;
+      for (JsonPairConst kv : orgs.as<JsonObjectConst>()) if (org != kv.key().c_str()) ids.push_back(kv.key().c_str());
+      std::sort(ids.begin(), ids.end());
+      for (const String& id : ids) _collectCourts(id.c_str(), orgs[id], courts);
+    }
+  }
+
+  JsonDocument list;
+  JsonArray arr = list.to<JsonArray>();
+  for (const _Court& c : courts) {
+    JsonObject o = arr.add<JsonObject>();
+    o["org"] = c.org; o["orgName"] = c.orgName; o["court"] = c.court; o["channel"] = c.channel;
+  }
+  String courtsJson;
+  serializeJson(list, courtsJson);
+  _setCourts(courtsJson);
+
+  _setAuthStatus("ok", _email, "", org, isAdmin && org.isEmpty() ? String("Admin") : orgName, isAdmin ? "admin" : "operator");
+  Serial.printf("[Firebase] Signed in: org=%s role=%s, %d courts\n", org.c_str(), role.c_str(), (int)courts.size());
+  return true;
+}
+
+inline void _gotIdToken(const String& idToken, long expiresIn) {
+  _idToken    = idToken;
+  _authFailed = false;
+  _nextAuthAt = millis() + (uint32_t)max(60L, expiresIn - 300) * 1000UL;
+}
+
+// Portal sign-in: email/password → ID + refresh token. The password is not
+// kept — the caller wipes it.
+inline bool _signInWithPassword(const String& email, const String& password) {
+  _email = email;
+  _setAuthStatus("pending", _email);
+  Serial.printf("[Firebase] Signing in as %s\n", email.c_str());
+
+  JsonDocument req;
+  req["email"] = email;
+  req["password"] = password;
+  req["returnSecureToken"] = true;
+  String body;
+  serializeJson(req, body);
+
+  JsonDocument filter;
+  filter["idToken"] = true;
+  filter["refreshToken"] = true;
+  filter["localId"] = true;
+  filter["expiresIn"] = true;
+  filter["error"]["message"] = true;
+  JsonDocument res;
+  int code = _httpsJson("POST", _AUTH_SIGNIN_URL, body, res, &filter);
+
+  if (code != 200) {
+    String msg = res["error"]["message"] | "";
+    if (code < 0) msg = "No connection to Firebase Auth";
+    else if (msg.isEmpty()) msg = "HTTP " + String(code);
+    Serial.printf("[Firebase] Sign-in failed: %s\n", msg.c_str());
+    if (msg == "INVALID_LOGIN_CREDENTIALS" || msg == "INVALID_PASSWORD" ||
+        msg == "EMAIL_NOT_FOUND" || msg == "INVALID_EMAIL") msg = "Wrong email or password";
+    else if (msg == "USER_DISABLED") msg = "Account disabled";
+    else if (msg.startsWith("TOO_MANY_ATTEMPTS")) msg = "Too many attempts, try again later";
+    // Nothing to retry with — the password is gone. Sign in again from the portal.
+    _authBlocked = true;
+    _setAuthStatus("error", _email, msg);
+    return false;
+  }
+
+  _refreshToken = res["refreshToken"] | "";
+  _saveSession();
+  _gotIdToken(res["idToken"] | "", String(res["expiresIn"] | "3600").toInt());
+  return _loadAccount(res["localId"] | "");
+}
+
+// Hourly renewal (and the first token after boot): refresh token → ID token.
+inline bool _refreshIdToken() {
+  JsonDocument filter;
+  filter["id_token"] = true;
+  filter["refresh_token"] = true;
+  filter["user_id"] = true;
+  filter["expires_in"] = true;
+  filter["error"]["message"] = true;
+  JsonDocument res;
+  int code = _httpsJson("POST", _AUTH_REFRESH_URL,
+                        "grant_type=refresh_token&refresh_token=" + _refreshToken, res, &filter,
+                        "application/x-www-form-urlencoded");
+
+  if (code != 200) {
+    String msg = res["error"]["message"] | "";
+    if (code < 0) msg = "No connection to Firebase Auth";
+    else if (msg.isEmpty()) msg = "HTTP " + String(code);
+    Serial.printf("[Firebase] Token refresh failed: %s\n", msg.c_str());
+    // The session itself is gone (password changed, account disabled or
+    // deleted): forget it. Anything else (network, 5xx) keeps the current ID
+    // token — still valid ~5 minutes past the scheduled refresh — and retries.
+    if (msg == "TOKEN_EXPIRED" || msg == "INVALID_REFRESH_TOKEN" ||
+        msg == "USER_DISABLED" || msg == "USER_NOT_FOUND") {
+      _clearSession();
+      _authBlocked = true;
+      _setAuthStatus("error", _email, msg == "USER_DISABLED" ? "Account disabled" : "Session ended — sign in again");
+      _setCourts("[]");
+    } else {
+      _authRetryLater(msg);
+    }
+    return false;
+  }
+
+  String rt = res["refresh_token"] | "";
+  if (rt.length() && rt != _refreshToken) { _refreshToken = rt; _saveSession(); }
+  _gotIdToken(res["id_token"] | "", String(res["expires_in"] | "3600").toInt());
+  return _loadAccount(res["user_id"] | "");
+}
+
+// Called by the Firebase task at the top of every loop iteration (online only).
+inline void tickAuth() {
+  if (_credsChanged) {
+    _credsChanged = false;
+    xSemaphoreTake(_authMutex(), portMAX_DELAY);
+    bool   pending  = _hasPending;
+    String email    = _pendingEmail;
+    String password = _pendingPassword;
+    _hasPending = false;
+    _pendingEmail = "";
+    _pendingPassword = "";
+    xSemaphoreGive(_authMutex());
+
+    _idToken     = "";
+    _nextAuthAt  = millis();
+    _authFailed  = false;
+    _authBlocked = false;
+
+    if (pending) {
+      _clearSession();
+      _email = email;
+      if (email.isEmpty()) {
+        _saveSession();  // stores the empty email
+        _setAuthStatus("none", "");
+        _setCourts("[]");
+        Serial.println("[Firebase] Signed out");
+        return;
+      }
+      _signInWithPassword(email, password);
+      password = "";
+      return;
+    }
+
+    // Boot: resume the stored session.
+    _prefs.begin("firebase", true);
+    _email        = _prefs.getString("email", "");
+    _refreshToken = _prefs.getString("rtok", "");
+    _prefs.end();
+    if (_refreshToken.isEmpty()) {
+      _setAuthStatus("none", "");
+      _setCourts("[]");
+      return;
+    }
+    _setAuthStatus("pending", _email);
+  }
+  if (_refreshToken.isEmpty() || _authBlocked) return;
+  if ((int32_t)(millis() - _nextAuthAt) < 0) return;
+  _refreshIdToken();
 }
 
 // ── Channel (match ID) ────────────────────────────────────────────────────
@@ -109,12 +490,12 @@ inline String getChannel() {
 
 // ── Parse game_settings.set_mode into the firmware's own format enum ──────
 // set_mode is a free-form string owned jointly by whichever writer last set
-// it (this board, the manager server's firebaseBridge.js, or the Fwango
-// bridge in TournamentLiveScores — see that project's CLAUDE.md) — values
+// it (this board, the manager server's firebaseBridge.js, or the friend's
+// scoreboard tool) — values
 // seen in practice include plain digit strings ("1"/"2"/"3", this board's
 // own convention: total sets in the match) and labels like "Best of 3".
-// Mirrors TournamentLiveScores/public/index.html's formatLabel()/
-// setsToWinMatch() parsing so all readers agree on what a given string means.
+// Same parsing as firebaseBridge.js's setModeToFormat() so all readers agree
+// on what a given string means.
 inline uint8_t _parseSetMode(const String& raw) {
   String text = raw;
   text.trim();
@@ -195,8 +576,7 @@ inline bool readScore(Score& score) {
   http.setTimeout(10000);
   http.setReuse(false);
 
-  String url = String(FIREBASE_DATABASE_URL)
-    + "/match-" + channel + ".json?shallow=false";
+  String url = _url(channel, "", "shallow=false");
 
   if (!http.begin(*_getClient(), url)) {
     Serial.println("[Firebase] Failed to begin HTTP (DNS error?)");
@@ -372,7 +752,7 @@ inline bool writeScore(const Score& score) {
   http.setTimeout(5000);
   http.setReuse(false);
 
-  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + ".json";
+  String url = _url(channel, "");
 
   if (!http.begin(*_getClient(), url)) {
     Serial.println("[Firebase] Write: failed to begin HTTP");
@@ -403,6 +783,7 @@ inline bool writeScore(const Score& score) {
 
   int code = http.PATCH(payload);
   http.end();
+  _checkAuthCode(code);
 
   if (code < 0) {
     Serial.printf("[Firebase] Write error: %d, recreating client\n", code);
@@ -431,8 +812,7 @@ inline bool writeFirstServer(const Score& score) {
   if (localIP[0] == 0) return false;
 
   int activeSet = score.setA + score.setB + 1;
-  String url = String(FIREBASE_DATABASE_URL)
-    + "/match-" + channel + "/score/set_" + String(activeSet) + ".json";
+  String url = _url(channel, "/score/set_" + String(activeSet));
 
   const char* serverVal   = (score.firstServer == 0) ? "a" : "c";
   const char* receiverVal = (score.firstServer == 0) ? "c" : "a";
@@ -450,6 +830,7 @@ inline bool writeFirstServer(const Score& score) {
   http.addHeader("Content-Type", "application/json");
   int code = http.PATCH(payload);
   http.end();
+  _checkAuthCode(code);
 
   if (code < 0) { _resetClient(); return false; }
   Serial.printf("[Firebase] writeFirstServer OK: server=%s receiver=%s (code %d)\n",
@@ -469,12 +850,12 @@ inline bool writeHardcap(uint8_t hardcap) {
   HTTPClient http;
   http.setTimeout(5000);
   http.setReuse(false);
-  String url = String(FIREBASE_DATABASE_URL)
-    + "/match-" + channel + "/game_settings/hardcap.json";
+  String url = _url(channel, "/game_settings/hardcap");
   if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
   http.addHeader("Content-Type", "application/json");
   int code = http.PUT(String(hardcap));
   http.end();
+  _checkAuthCode(code);
   if (code < 0) { _resetClient(); return false; }
   Serial.printf("[Firebase] writeHardcap OK: %d (code %d)\n", hardcap, code);
   return code == 200;
@@ -493,13 +874,13 @@ inline bool writeWinPoints(uint8_t winPoints) {
   http.setTimeout(5000);
   http.setReuse(false);
 
-  String url = String(FIREBASE_DATABASE_URL)
-    + "/match-" + channel + "/game_settings/win_points.json";
+  String url = _url(channel, "/game_settings/win_points");
 
   if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
   http.addHeader("Content-Type", "application/json");
   int code = http.PUT(String(winPoints));
   http.end();
+  _checkAuthCode(code);
 
   if (code < 0) { _resetClient(); return false; }
   Serial.printf("[Firebase] writeWinPoints OK: %d (code %d)\n", winPoints, code);
@@ -508,8 +889,8 @@ inline bool writeWinPoints(uint8_t winPoints) {
 
 // ── Write format (as game_settings.set_mode, the shared "Game Mode" field) ──
 // Written as a plain digit string ("1"/"2"/"3" = total sets in the match) —
-// the same convention the Fwango bridge already writes via numberOfGames —
-// so every existing reader (friend's tool, TournamentLiveScores) parses it
+// the same convention the former Fwango bridge wrote via numberOfGames —
+// so every existing reader (friend's tool, firebaseBridge.js) parses it
 // correctly without needing to special-case this board as a writer.
 
 inline bool writeFormat(uint8_t format) {
@@ -524,12 +905,12 @@ inline bool writeFormat(uint8_t format) {
   HTTPClient http;
   http.setTimeout(5000);
   http.setReuse(false);
-  String url = String(FIREBASE_DATABASE_URL)
-    + "/match-" + channel + "/game_settings/set_mode.json";
+  String url = _url(channel, "/game_settings/set_mode");
   if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
   http.addHeader("Content-Type", "application/json");
   int code = http.PUT("\"" + String(setMode) + "\"");
   http.end();
+  _checkAuthCode(code);
 
   if (code < 0) { _resetClient(); return false; }
   Serial.printf("[Firebase] writeFormat OK: %s (code %d)\n", setMode, code);
@@ -565,7 +946,7 @@ inline bool writeTimerState(const char* key) {
   HTTPClient http;
   http.setTimeout(5000);
   http.setReuse(false);
-  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/timer.json";
+  String url = _url(channel, "/timer");
   if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
   http.addHeader("Content-Type", "application/json");
 
@@ -584,6 +965,7 @@ inline bool writeTimerState(const char* key) {
     code = http.PUT(payload);
   }
   http.end();
+  _checkAuthCode(code);
 
   if (code < 0) { _resetClient(); return false; }
   Serial.printf("[Firebase] writeTimerState OK: %s (code %d)\n", (key && key[0]) ? key : "(none)", code);
@@ -611,7 +993,7 @@ inline bool readTimerState(String& outType, long& outElapsedMs) {
   HTTPClient http;
   http.setTimeout(8000);
   http.setReuse(false);
-  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/timer.json";
+  String url = _url(channel, "/timer");
   if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
   const char* headerKeys[] = {"Date"};
   http.collectHeaders(headerKeys, 1);
@@ -674,11 +1056,12 @@ inline bool _writeTeamSide(const String& channel, const char* side,
   HTTPClient http;
   http.setTimeout(5000);
   http.setReuse(false);
-  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/meta/" + side + ".json";
+  String url = _url(channel, String("/meta/") + side);
   if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
   http.addHeader("Content-Type", "application/json");
   int code = http.PATCH(payload);
   http.end();
+  _checkAuthCode(code);
 
   if (code < 0) {
     Serial.printf("[Firebase] writeTeamNames(%s) network error: %d\n", side, code);
@@ -720,7 +1103,7 @@ inline bool _fetchJson(const String& channel, const char* path, JsonDocument& do
   HTTPClient http;
   http.setTimeout(8000);
   http.setReuse(false);
-  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/" + path + ".json";
+  String url = _url(channel, String("/") + path);
   if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
   int code = http.GET();
   if (code != 200) {

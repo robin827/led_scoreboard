@@ -146,6 +146,11 @@ static void _firebaseRun() {
     WiFiMgr::tick();
 
     if (WiFiMgr::isOnline()) {
+      // Sign in / renew the ID token before any write needs it (writes are
+      // refused by the RTDB rules without one, reads work either way).
+      FD_MARK("Firebase::tickAuth");
+      Firebase::tickAuth();
+
       SCORE_LOCK();
       Score local = currentScore;
       SCORE_UNLOCK();

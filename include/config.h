@@ -7,7 +7,7 @@
 // ── Firmware version & OTA manifest ──────────────────────────────────────────
 // Bump FIRMWARE_VERSION on every release; publish a matching manifest JSON at
 // MANIFEST_URL with the fields: { "version", "url", "notes" }
-#define FIRMWARE_VERSION  "1.11.0"
+#define FIRMWARE_VERSION  "1.12.0"
 #define MANIFEST_URL      "https://api.github.com/repos/robin827/led_scoreboard/releases/latest"
 
 // ── Scoreboard identity (used for AP name, ESP-NOW beacon, etc.) ──────────
@@ -19,7 +19,9 @@
 
 // ── Firebase Realtime Database ────────────────────────────────────────────
 #define FIREBASE_DATABASE_URL     "https://live-scoreboard-fc0e5-default-rtdb.europe-west1.firebasedatabase.app"
-#define FIREBASE_DATABASE_SECRET  "ta-database-secret"  // Pas utilisé si règles publiques
+// Public Web API key of the same project (also in scoreboard/js/firebase_config.js)
+// — only identifies the project for Firebase Auth sign-in, it grants nothing.
+#define FIREBASE_API_KEY          "AIzaSyBKYKaXBpWNMgT8TlSWECmbzUSP85Eo6Wg"
 
 // ── LED Panel ─────────────────────────────────────────────────────────────
 #define LED_PIN       13

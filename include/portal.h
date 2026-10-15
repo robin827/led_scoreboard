@@ -532,7 +532,17 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
     <div class="setting-group" id="firebaseSection" style="display:none">
       <label class="setting-label">Firebase</label>
       <div style="margin-bottom:12px">
-        <div style="font-size:0.7rem;color:var(--accent);margin-bottom:6px">Channel</div>
+        <div style="font-size:0.7rem;color:var(--accent);margin-bottom:6px">Account <span id="fbAuthBadge" class="status-badge status-offline">Not signed in</span></div>
+        <div id="fbAuthInfo" style="font-size:0.7rem;color:var(--accent);margin-bottom:8px;line-height:1.4">Sign in with your org's scoreboard account (same login as the input panel) &mdash; without it the board shows scores but can't send them.</div>
+        <div id="fbLoginForm">
+          <input type="email" class="input" id="fbEmail" placeholder="Email" autocomplete="username" style="margin-bottom:8px">
+          <input type="password" class="input" id="fbPass" placeholder="Password" autocomplete="current-password" style="margin-bottom:8px">
+          <button class="btn" style="width:100%;background:var(--a);color:var(--bg)" onclick="fbSignIn()">Sign in</button>
+        </div>
+        <button class="btn" id="fbSignOutBtn" style="width:100%;background:var(--elem);color:var(--accent);display:none" onclick="fbSignOut()">Sign out</button>
+      </div>
+      <div style="margin-bottom:12px">
+        <div style="font-size:0.7rem;color:var(--accent);margin-bottom:6px">Court</div>
         <select class="input" id="fbChannel" onchange="saveFbChannel()">
           <option value="">— select channel —</option>
         </select>
@@ -976,7 +986,9 @@ async function refresh() {
 
     if (d.mode !== undefined) _applyModeUI(d.mode);
     const _fbCh = document.getElementById('fbChannel');
-    if (_fbCh && d.fbChannel !== undefined) _fbCh.value = d.fbChannel;
+    if (d.fbChannel !== undefined) _fbCurrentCh = d.fbChannel;
+    if (_fbCh && d.fbChannel !== undefined && document.activeElement !== _fbCh) _fbCh.value = d.fbChannel;
+    if (d.fbAuth) _fbApplyAuth(d.fbAuth, d.fbCourtsRev);
     const _fbPo = document.getElementById('fbPoll');
     if (_fbPo && d.fbPoll !== undefined) _fbPo.value = d.fbPoll;
 
@@ -1380,16 +1392,76 @@ async function setMode(m) {
   try { await fetch('/mode', {method:'POST', body: m}); refresh(); } catch(e) {}
 }
 
-// Populate channel select 1-40
-(function(){
+// Court picker: the signed-in account's courts (grouped by org for admins),
+// or plain channels 1-40 while signed out (read-only: writes need an account).
+let _fbCourtsRev = -1, _fbCourtsSignedIn = null, _fbCurrentCh = '';
+function _fbFillCourts(courts) {
   const s = document.getElementById('fbChannel');
   if (!s) return;
-  for (let i = 1; i <= 40; i++) {
-    const o = document.createElement('option');
-    o.value = String(i); o.textContent = 'Channel ' + i;
-    s.appendChild(o);
+  s.innerHTML = '';
+  const opt = (ch, label) => { const o = document.createElement('option'); o.value = String(ch); o.textContent = label; return o; };
+  s.appendChild(opt('', courts.length ? '— select court —' : '— select channel —'));
+  if (courts.length) {
+    const orgs = [...new Set(courts.map(c => c.org))];
+    orgs.forEach(org => {
+      const list = courts.filter(c => c.org === org);
+      let target = s;
+      if (orgs.length > 1) { target = document.createElement('optgroup'); target.label = list[0].orgName; s.appendChild(target); }
+      list.forEach(c => target.appendChild(opt(c.channel, 'Court ' + c.court + '  (channel ' + c.channel + ')')));
+    });
+    if (_fbCurrentCh && !courts.some(c => String(c.channel) === _fbCurrentCh))
+      s.appendChild(opt(_fbCurrentCh, 'Channel ' + _fbCurrentCh + ' (no write access)'));
+  } else {
+    for (let i = 1; i <= 40; i++) s.appendChild(opt(i, 'Channel ' + i));
   }
-})();
+  s.value = _fbCurrentCh;
+}
+_fbFillCourts([]);
+
+async function _fbLoadCourts() {
+  try { _fbFillCourts(await (await fetch('/firebase/courts')).json()); } catch(e) {}
+}
+
+function _fbApplyAuth(a, courtsRev) {
+  const badge = document.getElementById('fbAuthBadge');
+  const info  = document.getElementById('fbAuthInfo');
+  const form  = document.getElementById('fbLoginForm');
+  const out   = document.getElementById('fbSignOutBtn');
+  if (!badge || !a) return;
+  const st = a.state || 'none';
+  const labels = {none: 'Not signed in', pending: 'Signing in…', ok: 'Signed in', error: 'Error'};
+  badge.textContent = labels[st] || st;
+  badge.className = 'status-badge ' + (st === 'ok' ? 'status-online' : st === 'pending' ? 'status-connecting' : 'status-offline');
+  if (st === 'ok') info.textContent = (a.orgName || a.org || '') + (a.role === 'admin' ? ' (admin)' : '') + ' — ' + (a.email || '');
+  else if (st === 'error') info.textContent = (a.email ? a.email + ': ' : '') + (a.error || 'sign-in failed');
+  else if (st === 'pending') info.textContent = a.email || '';
+  else info.textContent = "Sign in with your org's scoreboard account (same login as the input panel) — without it the board shows scores but can't send them.";
+  const signedIn = st !== 'none';
+  // After an error (wrong password, session ended) the form comes back to sign in again.
+  form.style.display = (st === 'none' || st === 'error') ? '' : 'none';
+  out.style.display  = signedIn ? '' : 'none';
+  const em = document.getElementById('fbEmail');
+  if (em && !em.value && a.email && document.activeElement !== em) em.value = a.email;
+  if (courtsRev !== _fbCourtsRev || signedIn !== _fbCourtsSignedIn) {
+    _fbCourtsRev = courtsRev; _fbCourtsSignedIn = signedIn;
+    _fbLoadCourts();
+  }
+}
+
+async function fbSignIn() {
+  const email = document.getElementById('fbEmail')?.value.trim();
+  const password = document.getElementById('fbPass')?.value;
+  if (!email || !password) return;
+  try {
+    await fetch('/firebase/account', {method:'POST', body: JSON.stringify({email, password})});
+    document.getElementById('fbPass').value = '';
+    refresh();
+  } catch(e) {}
+}
+
+async function fbSignOut() {
+  try { await fetch('/firebase/account', {method:'POST', body: JSON.stringify({email: ''})}); refresh(); } catch(e) {}
+}
 
 async function saveFbChannel() {
   const val = document.getElementById('fbChannel')?.value;
@@ -2241,6 +2313,8 @@ inline void init() {
     json += ",\"mode\":\"" + _modeStr + "\"";
     json += ",\"fbChannel\":\"" + Firebase::getChannel() + "\"";
     json += ",\"fbPoll\":" + String(Firebase::getPollIntervalSec());
+    json += ",\"fbAuth\":" + Firebase::getAuthStatusJson();
+    json += ",\"fbCourtsRev\":" + String(Firebase::getCourtsRev());
     json += ",\"hardcap\":" + String(currentScore.hardcap);
     json += ",\"format\":" + String(currentScore.format);
     json += ",\"version\":\"" + String(FIRMWARE_VERSION) + "\"";
@@ -2556,6 +2630,25 @@ inline void init() {
       Firebase::setChannel(newChannel);
     }
     server->send(200, "text/plain", "OK");
+  });
+
+  // Firebase account — {email, password}; an empty email signs out. Sign-in
+  // itself happens on the Firebase task (see Firebase::tickAuth()); the page
+  // follows its progress through /status's fbAuth.
+  server->on("/firebase/account", HTTP_POST, []() {
+    if (!server->hasArg("plain")) { server->send(400, "text/plain", "Bad"); return; }
+    JsonDocument doc;
+    if (deserializeJson(doc, server->arg("plain"))) { server->send(400, "text/plain", "Bad"); return; }
+    String email = doc["email"] | "";
+    String password = doc["password"] | "";
+    email.trim();
+    if (email.length() > 100 || password.length() > 100) { server->send(400, "text/plain", "Too long"); return; }
+    Firebase::setCredentials(email, email.length() ? password : String(""));
+    server->send(200, "text/plain", "OK");
+  });
+
+  server->on("/firebase/courts", HTTP_GET, []() {
+    server->send(200, "application/json", Firebase::getCourtsJson());
   });
 
   server->on("/firebase/pollinterval", HTTP_POST, []() {

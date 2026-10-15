@@ -127,7 +127,7 @@ inline bool _read(JsonDocument& doc, int64_t& serverNowMs) {
   HTTPClient http;
   http.setTimeout(8000);
   http.setReuse(false);
-  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/event_history.json";
+  String url = Firebase::_url(channel, "/event_history");
   if (!http.begin(*Firebase::_getClient(), url)) { Firebase::_resetClient(); return false; }
   const char* headerKeys[] = {"Date"};
   http.collectHeaders(headerKeys, 1);
@@ -155,11 +155,12 @@ inline bool _write(JsonDocument& doc) {
   HTTPClient http;
   http.setTimeout(8000);
   http.setReuse(false);
-  String url = String(FIREBASE_DATABASE_URL) + "/match-" + channel + "/event_history.json";
+  String url = Firebase::_url(channel, "/event_history");
   if (!http.begin(*Firebase::_getClient(), url)) { Firebase::_resetClient(); return false; }
   http.addHeader("Content-Type", "application/json");
   int code = http.PUT(payload);
   http.end();
+  Firebase::_checkAuthCode(code);
   if (code < 0) { Firebase::_resetClient(); return false; }
   Serial.printf("[Firebase] event_history PUT (%u entries, code %d)\n", (unsigned)doc.size(), code);
   return code == 200;
