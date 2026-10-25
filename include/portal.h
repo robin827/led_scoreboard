@@ -147,6 +147,10 @@ body.top-align{align-items:flex-start}
 .btn-repeat{touch-action:none}
 .actions{display:flex;flex-direction:column;gap:10px;padding-top:16px;border-top:1px solid var(--elem)}
 .actions .btn{font-size:0.85rem;background:var(--elem);color:var(--accent)}
+.actions .btn-validate{background:var(--a);color:var(--bg);font-weight:700}
+.validation-status{font-size:0.8rem;text-align:center;color:var(--accent)}
+.validation-status.recorded{color:#3ccf7a}
+.validation-status.rejected,.validation-status.failed{color:var(--b)}
 .btn-hold{position:relative;overflow:hidden;touch-action:none}
 .btn-hold::after{content:'';position:absolute;left:0;top:0;height:100%;width:0;background:rgba(255,255,255,0.1);border-radius:12px}
 .btn-hold.holding::after{width:100%;transition:width .5s linear}
@@ -382,6 +386,11 @@ video{width:100%;border-radius:8px;background:#000;display:none;margin-bottom:8p
     </div>
 
     <div class="actions" id="actions">
+      <!-- End-of-match validation (same as holding a pedal on the board's
+           "OK? / HOLD" screen) - only shown while the match is over and not
+           validated yet; refresh() toggles it from /status's "validation". -->
+      <button class="btn btn-validate" id="validateBtn" style="display:none" onclick="openModal('Validate Score','Confirm the final score with both teams. It is then sent to the tournament app.','modal-ok-yellow',validateScore,'Validate')">Validate Score</button>
+      <div class="validation-status" id="validationStatus" style="display:none"></div>
       <button class="btn" onclick="openModal('Next Set','Confirm the current set is over and start the next one.','modal-ok-yellow','/nextset')">Next Set</button>
       <button class="btn" onclick="openModal('Reset Score','Reset all scores and sets. This cannot be undone.','modal-ok-red','/reset')">Reset</button>
     </div>
@@ -786,6 +795,30 @@ async function action(url, btn) {
   } catch(e) {}
 }
 
+async function validateScore() {
+  try {
+    const r = await fetch('/validate', {method:'POST'});
+    if (r.status === 409) { showToast('Nothing to validate - the match is not over'); return; }
+    refresh();
+  } catch(e) {}
+}
+
+const VALIDATION_TEXT = {
+  sent: 'Score validated - waiting for the tournament app',
+  recorded: 'Score recorded by the tournament app',
+  rejected: 'Score refused by the tournament app - see the organizers',
+  failed: 'No answer from the tournament app - the score is not recorded. Retry, or tell the organizers.',
+};
+function _updateValidation(v) {
+  const btn = document.getElementById('validateBtn');
+  btn.style.display = (v === 'pending' || v === 'failed') ? '' : 'none';
+  btn.textContent = v === 'failed' ? 'Retry Validation' : 'Validate Score';
+  const st = document.getElementById('validationStatus');
+  st.style.display = VALIDATION_TEXT[v] ? '' : 'none';
+  st.textContent = VALIDATION_TEXT[v] || '';
+  st.className = 'validation-status ' + v;
+}
+
 function startRepeat(url, btn) {
   action(url, btn);
   _repeatStart = setTimeout(() => {
@@ -871,6 +904,7 @@ async function refresh() {
         b.classList.toggle('active', b.id === 'ds' + d.dimSleep));
     }
     if (d.sleeping !== undefined) { _sleeping = d.sleeping; _updateSleepButtons(); }
+    if (d.validation !== undefined) _updateValidation(d.validation);
     if (d.serverIp !== undefined && !_serverIpDirty) document.getElementById('serverIp').value = d.serverIp;
     if (d.teamA !== undefined) document.getElementById('lblA').textContent = d.teamA || 'Team A';
     if (d.teamB !== undefined) document.getElementById('lblB').textContent = d.teamB || 'Team B';
@@ -988,7 +1022,7 @@ async function refresh() {
     const _fbCh = document.getElementById('fbChannel');
     if (d.fbChannel !== undefined) _fbCurrentCh = d.fbChannel;
     if (_fbCh && d.fbChannel !== undefined && document.activeElement !== _fbCh) _fbCh.value = d.fbChannel;
-    if (d.fbAuth) _fbApplyAuth(d.fbAuth, d.fbCourtsRev);
+    if (d.fbAuth) _fbApplyAuth(d.fbAuth, d.fbCourtsRev, d.fbWriteDenied);
     const _fbPo = document.getElementById('fbPoll');
     if (_fbPo && d.fbPoll !== undefined) _fbPo.value = d.fbPoll;
 
@@ -1422,7 +1456,7 @@ async function _fbLoadCourts() {
   try { _fbFillCourts(await (await fetch('/firebase/courts')).json()); } catch(e) {}
 }
 
-function _fbApplyAuth(a, courtsRev) {
+function _fbApplyAuth(a, courtsRev, writeDenied) {
   const badge = document.getElementById('fbAuthBadge');
   const info  = document.getElementById('fbAuthInfo');
   const form  = document.getElementById('fbLoginForm');
@@ -1433,6 +1467,12 @@ function _fbApplyAuth(a, courtsRev) {
   badge.textContent = labels[st] || st;
   badge.className = 'status-badge ' + (st === 'ok' ? 'status-online' : st === 'pending' ? 'status-connecting' : 'status-offline');
   if (st === 'ok') info.textContent = (a.orgName || a.org || '') + (a.role === 'admin' ? ' (admin)' : '') + ' — ' + (a.email || '');
+  // Signed in, but Firebase refuses the writes: this court isn't in the account's org.
+  if (st === 'ok' && writeDenied) {
+    badge.textContent = "Can't send scores";
+    badge.className = 'status-badge status-offline';
+    info.textContent += " — this account can't write to this court. Pick one of its courts, or sign in with the court's org account.";
+  }
   else if (st === 'error') info.textContent = (a.email ? a.email + ': ' : '') + (a.error || 'sign-in failed');
   else if (st === 'pending') info.textContent = a.email || '';
   else info.textContent = "Sign in with your org's scoreboard account (same login as the input panel) — without it the board shows scores but can't send them.";
@@ -2144,12 +2184,22 @@ fetchLog();redraw();
 // UI is the actual gate, not an auth wall on every settings endpoint. Empty
 // stored pin (the default) means the gate is disabled, so existing boards
 // behave exactly as before until someone opts in from the Settings page.
+// Cached after the first read: /status asks for it on every 2s poll, and
+// until a pin is first set the "portal" namespace doesn't exist, so each
+// read-only open logged an nvs_open NOT_FOUND error.
+static String _settingsPin       = "";
+static bool   _settingsPinLoaded = false;
+
 inline String _getSettingsPin() {
-  Preferences p;
-  p.begin("portal", true);
-  String pin = p.getString("pin", "");
-  p.end();
-  return pin;
+  if (!_settingsPinLoaded) {
+    Preferences p;
+    if (p.begin("portal", true)) {
+      _settingsPin = p.getString("pin", "");
+      p.end();
+    }
+    _settingsPinLoaded = true;
+  }
+  return _settingsPin;
 }
 
 inline void _setSettingsPin(const String& pin) {
@@ -2158,6 +2208,8 @@ inline void _setSettingsPin(const String& pin) {
   if (pin.length() == 0) p.remove("pin");
   else p.putString("pin", pin);
   p.end();
+  _settingsPin       = pin;
+  _settingsPinLoaded = true;
 }
 
 // ── Remembered devices (by IP) for the settings pin gate ──────────────────
@@ -2302,6 +2354,7 @@ inline void init() {
     for (int i = 0; i < sSetA + sSetB && i < 3; i++) { if (i) json += ","; json += String(sHistB[i]); }
     json += "],\"dimSleep\":" + String(ScoreActions::getDimTimeoutSec());
     json += ",\"sleeping\":" + String(ScoreActions::isDimActive() ? "true" : "false");
+    json += ",\"validation\":\"" + String(ScoreActions::validationStatus()) + "\"";
     json += ",\"serverIp\":\"" + WsClient::getServerIp() + "\"";
     json += ",\"wsConnected\":" + String(WsClient::isConnected() ? "true" : "false");
     String _modeStr;
@@ -2314,6 +2367,7 @@ inline void init() {
     json += ",\"fbChannel\":\"" + Firebase::getChannel() + "\"";
     json += ",\"fbPoll\":" + String(Firebase::getPollIntervalSec());
     json += ",\"fbAuth\":" + Firebase::getAuthStatusJson();
+    json += ",\"fbWriteDenied\":" + String(Firebase::writeDenied() ? "true" : "false");
     json += ",\"fbCourtsRev\":" + String(Firebase::getCourtsRev());
     json += ",\"hardcap\":" + String(currentScore.hardcap);
     json += ",\"format\":" + String(currentScore.format);
@@ -2339,6 +2393,12 @@ inline void init() {
   server->on("/b/dec",   HTTP_POST, []() { ScoreActions::apply("b/dec");   server->send(200, "text/plain", "OK"); });
   server->on("/nextset", HTTP_POST, []() {
     if (!ScoreActions::apply("nextset")) { server->send(409, "text/plain", "TIED"); return; }
+    server->send(200, "text/plain", "OK");
+  });
+  // Same as holding a pedal on the "OK? / HOLD" screen (ScoreActions' Validation).
+  server->on("/validate", HTTP_POST, []() {
+    if (!ScoreActions::confirmValidation()) { server->send(409, "text/plain", "NOTHING TO VALIDATE"); return; }
+    WsClient::requestPush();
     server->send(200, "text/plain", "OK");
   });
   server->on("/timeout", HTTP_POST, []() { ScoreActions::apply("timeout"); server->send(200, "text/plain", "OK"); });

@@ -86,8 +86,9 @@ inline void drawDigit(int d, int sx, int sy, CRGB col) {
 static constexpr int FONT5X7_SPACE = 36;
 static constexpr int FONT5X7_APOS  = 37;
 static constexpr int FONT5X7_DASH  = 38;
+static constexpr int FONT5X7_QMARK = 39;
 
-static const uint8_t FONT5X7[39][7][5] = {
+static const uint8_t FONT5X7[40][7][5] = {
   {{0,1,1,1,0},{1,0,0,0,1},{1,0,0,0,1},{1,1,1,1,1},{1,0,0,0,1},{1,0,0,0,1},{1,0,0,0,1}}, // A
   {{1,1,1,1,0},{1,0,0,0,1},{1,0,0,0,1},{1,1,1,1,0},{1,0,0,0,1},{1,0,0,0,1},{1,1,1,1,0}}, // B
   {{0,1,1,1,0},{1,0,0,0,1},{1,0,0,0,0},{1,0,0,0,0},{1,0,0,0,0},{1,0,0,0,1},{0,1,1,1,0}}, // C
@@ -127,6 +128,7 @@ static const uint8_t FONT5X7[39][7][5] = {
   {{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0}}, // space
   {{0,1,0,0,0},{0,1,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0}}, // '
   {{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{1,1,1,1,1},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0}}, // -
+  {{0,1,1,1,0},{1,0,0,0,1},{0,0,0,0,1},{0,0,0,1,0},{0,0,1,0,0},{0,0,0,0,0},{0,0,1,0,0}}, // ?
 };
 
 inline int _fontCharIndex(char c) {
@@ -135,6 +137,7 @@ inline int _fontCharIndex(char c) {
   if (c >= '0' && c <= '9') return 26 + (c - '0');
   if (c == '\'') return FONT5X7_APOS;
   if (c == '-')  return FONT5X7_DASH;
+  if (c == '?')  return FONT5X7_QMARK;
   return FONT5X7_SPACE;
 }
 
@@ -195,6 +198,8 @@ static constexpr uint32_t SCENE_SLEEP   = 5u << 28;
 static constexpr uint32_t SCENE_PROMPT  = 6u << 28;
 static constexpr uint32_t SCENE_INTRO   = 7u << 28;
 static constexpr uint32_t SCENE_SUMMARY = 8u << 28;
+static constexpr uint32_t SCENE_VALIDATE = 9u << 28;
+static constexpr uint32_t SCENE_RESULT   = 10u << 28;
 
 // Fade level (0..255) for linear progress p (0 = dark, 1 = full). Smootherstep
 // so it eases out of and into black instead of starting/stopping abruptly,
@@ -773,8 +778,8 @@ static const uint8_t _TG_V[5][3] = {{1,0,1},{1,0,1},{1,0,1},{1,0,1},{0,1,0}};
 static const uint8_t _TG_Q[5][3] = {{1,1,1},{0,0,1},{0,1,1},{0,0,0},{0,1,0}};
 static const uint8_t _TG_B[5][3] = {{1,1,0},{1,0,1},{1,1,0},{1,0,1},{1,1,0}};
 
-inline void _drawGlyph3x5(const uint8_t (*g)[3], int sx, int sy, CRGB col) {
-  for (int gy = 0; gy < 5; gy++)
+inline void _drawGlyph3x5(const uint8_t (*g)[3], int sx, int sy, CRGB col, int rows = 5) {
+  for (int gy = 0; gy < rows; gy++)
     for (int gx = 0; gx < 3; gx++)
       if (g[gy][gx]) {
         int px = sx + gx, py = sy + gy;
@@ -818,7 +823,7 @@ inline void showTeamIntro(const TeamNames::Names& n) {
   int rightLen = (int)strlen(right);
 
   static constexpr int CHAR_W = 6;  // 5px glyph + 1px gap
-  static constexpr uint32_t SPEED_PX_PER_SEC = 20;
+  static constexpr uint32_t SPEED_PX_PER_SEC = 30;
 
   // One loop = "A VS B VS " — the trailing separator joins B back to the
   // next repeat of A, so "VS" shows between the names in both directions.
@@ -885,9 +890,8 @@ inline void showMatchSummary(const Score& s, uint32_t elapsedMs) {
       drawChar5x7('T', 12, Y, TEXT_GREEN);
       drawChar5x7((char)('1' + set), 19, Y, TEXT_GREEN);
     } else {
-      bool live = set >= s.setA + s.setB;  // won but not yet nexted
-      uint8_t a = live ? s.scoreA : s.histA[set];
-      uint8_t b = live ? s.scoreB : s.histB[set];
+      uint8_t a, b;
+      finishedSetScore(s, set, a, b);
       _drawScorePair(a, b, Y);
       _leds[xy(11, Y + 3)] = TEXT_GREEN_DIM;
       _leds[xy(12, Y + 3)] = TEXT_GREEN_DIM;
@@ -897,6 +901,143 @@ inline void showMatchSummary(const Score& s, uint32_t elapsedMs) {
   if (level < 255)
     for (int i = 0; i < TOTAL_LEDS; i++) _leds[i].nscale8(level);
   _present(SCENE_SUMMARY);
+}
+
+// ─── End-of-match validation ("OK? / HOLD") ─────────────────────────────────
+// Shown in turn with the set recap once the match is over on a synced board
+// (see ScoreActions' Validation). While a pedal is held, `fill` (0..1) fills
+// the "HOLD" rows from the left with a soft leading edge; the text is knocked out
+// of the fill so it stays readable, and the fill drains back if the pedal is
+// released before the long press confirms.
+
+// "HOLD" in 3×4 letters, to fit the 4-row extension panel.
+static const uint8_t _HOLD4[4][4][3] = {
+  {{1,0,1},{1,1,1},{1,1,1},{1,0,1}},  // H (2-row bar: symmetric, not read as an M)
+  {{1,1,1},{1,0,1},{1,0,1},{1,1,1}},  // O
+  {{1,0,0},{1,0,0},{1,0,0},{1,1,1}},  // L
+  {{1,1,0},{1,0,1},{1,0,1},{1,1,0}},  // D
+};
+static const CRGB VALIDATE_HOLD = CRGB(255, 200, 0);  // yellow: tells apart from the green "OK?"
+static const CRGB VALIDATE_FILL = CRGB(0, 150, 60);
+
+inline void showValidatePrompt(float fill) {
+  _timerMode = true;
+  _clear();
+
+  // "OK?" in the 5×7 font on the main panel (x 3..19, rows 0..6), a blank
+  // row, then "HOLD" in 3×4 on the extension panel (x 4..18, rows 8..11),
+  // breathing to invite the press.
+  drawChar5x7('O', 3,  0, TEXT_GREEN);
+  drawChar5x7('K', 9,  0, TEXT_GREEN);
+  drawChar5x7('?', 15, 0, TEXT_GREEN);
+  CRGB holdCol = VALIDATE_HOLD; holdCol.nscale8(qadd8(_breatheFactor() / 2, 110));
+  for (int i = 0; i < 4; i++) _drawGlyph3x5(_HOLD4[i], 4 + i * 4, (int)Config::NUM_ROWS, holdCol, 4);
+
+  if (fill > 0.0f) {
+    const int COLS = (int)Config::NUM_COLS;
+    const int ROW0 = (int)Config::NUM_ROWS;  // only behind "HOLD" (rows 8..11)
+    const int ROWS = ROW0 + 4;
+    float edge = fill * COLS;
+    for (int x = 0; x < COLS; x++) {
+      float cov = edge - x;
+      if (cov <= 0.0f) break;
+      uint8_t lvl = _fadeLevel(cov > 1.0f ? 1.0f : cov);
+      for (int y = ROW0; y < ROWS; y++) {
+        CRGB& px = _leds[xy(x, y)];
+        px = blend(px, px ? CRGB::Black : VALIDATE_FILL, lvl);
+      }
+    }
+  }
+  _present(SCENE_VALIDATE);
+}
+
+// After the confirm: a check mark that draws itself in (dim and breathing
+// while RoundnetFranceConnect hasn't answered, bright once it recorded the
+// score), or a red cross when it refused it.
+enum ResultMark : uint8_t { MARK_SENT = 1, MARK_RECORDED = 2, MARK_REJECTED = 3 };
+
+inline void showResultMark(ResultMark mark, uint32_t elapsedMs) {
+  _timerMode = true;
+  _clear();
+
+  if (mark == MARK_REJECTED) {
+    const CRGB red = CRGB(255, 60, 60);
+    for (int i = 0; i < 10; i++) {
+      _leds[xy(7 + i, 1 + i)]  = red;
+      _leds[xy(16 - i, 1 + i)] = red;
+    }
+  } else {
+    // Short arm down, long arm up, 2px thick, drawn cell by cell over 350ms.
+    static const int8_t CHECK[][2] = {{7,6},{8,7},{9,8},{10,9},{11,8},{12,7},{13,6},
+                                      {14,5},{15,4},{16,3},{17,2}};
+    static constexpr int N = sizeof(CHECK) / sizeof(CHECK[0]);
+    int shown = (int)min<uint32_t>(N, 1 + elapsedMs * N / 350);
+    CRGB col = TEXT_GREEN;
+    if (mark == MARK_SENT) col.nscale8(qadd8(_breatheFactor() / 2, 90));
+    for (int i = 0; i < shown; i++) {
+      _leds[xy(CHECK[i][0], CHECK[i][1])]     = col;
+      _leds[xy(CHECK[i][0], CHECK[i][1] + 1)] = col;
+    }
+  }
+  _present(SCENE_RESULT | mark);
+}
+
+// Where both teams play next, from RoundnetFranceConnect's answer: each
+// team's name in its colour followed by its label ("TERRAIN 4", "A SUIVRE"...),
+// scrolling in from the right and looping — or its refusal message, in red.
+// Names are the ones the result was confirmed with: by now the court may
+// already show the next match's teams.
+static constexpr uint32_t RESULT_SCROLL_PX_PER_SEC = 30;
+
+inline int _resultTextW(const char* nameA, const char* labelA, const char* nameB,
+                        const char* labelB, const char* msg, bool rejected) {
+  static constexpr int CHAR_W = 6;
+  if (rejected) return ((int)strlen(msg) + 4) * CHAR_W;
+  return ((int)strlen(nameA) + 1 + (int)strlen(labelA) + 4 +
+          (int)strlen(nameB) + 1 + (int)strlen(labelB) + 4) * CHAR_W;
+}
+
+// One full pass of the text across the panel, for main.cpp's display cycle.
+inline uint32_t resultMarqueeMs(const char* nameA, const char* labelA, const char* nameB,
+                                const char* labelB, const char* msg, bool rejected) {
+  int w = _resultTextW(nameA, labelA, nameB, labelB, msg, rejected) + (int)Config::NUM_COLS;
+  return (uint32_t)w * 1000UL / RESULT_SCROLL_PX_PER_SEC;
+}
+
+inline void showResultMarquee(const char* nameA, const char* labelA, const char* nameB,
+                              const char* labelB, const char* msg, bool rejected,
+                              uint32_t elapsedMs) {
+  _timerMode = true;
+  _clear();
+
+  static constexpr int CHAR_W = 6;
+  const int COLS  = (int)Config::NUM_COLS;
+  const int Y     = 2;
+  const int loopW = _resultTextW(nameA, labelA, nameB, labelB, msg, rejected);
+  const CRGB red  = CRGB(255, 60, 60);
+
+  // Copy k starts at COLS - s + k*loopW: the first one enters from the right
+  // edge, the next follows one loop width behind it.
+  int s = (int)(elapsedMs * RESULT_SCROLL_PX_PER_SEC / 1000UL);
+  int kFirst = s > COLS ? (s - COLS) / loopW : 0;
+  for (int k = kFirst; k <= kFirst + 2; k++) {
+    int cx = COLS - s + k * loopW;
+    if (cx >= COLS) break;
+    auto text = [&](const char* t, CRGB col) {
+      for (const char* c = t; *c; c++) { drawChar5x7(*c, cx, Y, col); cx += CHAR_W; }
+    };
+    if (rejected) {
+      text(msg, red);
+    } else {
+      text(nameA, COLOR_A); cx += CHAR_W; text(labelA, TEXT_GREEN); cx += 4 * CHAR_W;
+      text(nameB, COLOR_B); cx += CHAR_W; text(labelB, TEXT_GREEN);
+    }
+  }
+
+  uint32_t h = 5381;
+  for (const char* c = rejected ? msg : labelA; *c; c++) h = h * 33 + (uint8_t)*c;
+  for (const char* c = rejected ? "" : labelB; *c; c++) h = h * 33 + (uint8_t)*c;
+  _present(SCENE_RESULT | ((h & 0x00FFFFFF) << 2));
 }
 
 } // namespace LED

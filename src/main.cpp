@@ -34,8 +34,8 @@ static volatile bool _fbRunning       = false;
 // of its own loop, unlike a channel switch used to go through
 // stopFirebaseTask()/startFirebaseTask(): that path's 1.5s cooperative-stop
 // grace period is far shorter than a single Firebase HTTPS call can
-// legitimately take (every call here does a full TLS handshake, no
-// keep-alive — readScore() alone times out at 10s), so a channel switch
+// legitimately take (a request that needs a new connection does a full TLS
+// handshake, and fetchMatch()'s GETs time out at 10s), so a channel switch
 // landing mid-request routinely forced a still-running task to be deleted
 // out from under an in-flight WiFiClientSecure/BearSSL call. That's safe
 // for the *other* caller of stopFirebaseTask() (the 60s-stuck watchdog in
@@ -86,6 +86,10 @@ static void _firebaseRun() {
   // against, so no special force-write-first sentinel is needed here.
   String lastWrittenTimerType    = "";
   String lastSeenRemoteTimerType = "";
+  // Nonce last written as result_validated (0 = null). Starts on a value no
+  // validation has, so the first push after the initial read clears whatever
+  // a previous boot left there — a reboot forgets its own validation.
+  uint32_t lastWrittenValNonce = UINT32_MAX;
   // True from boot and after every WiFi drop, until the first successful
   // score/timer read after (re)connecting. A set change or a running "break"
   // seen on that first read happened at some unknown point while we were
@@ -133,6 +137,7 @@ static void _firebaseRun() {
       lastWrittenNames         = TeamNames::Names{};
       lastWrittenTimerType     = "";
       lastSeenRemoteTimerType  = "";
+      lastWrittenValNonce      = UINT32_MAX;
       freshScoreRead           = true;
       freshTimerRead           = true;
       historyBaseValid         = false;
@@ -156,23 +161,27 @@ static void _firebaseRun() {
       SCORE_UNLOCK();
 
       // Push local changes to Firebase — gated on didInitialRead, see comment
-      // on its declaration above.
+      // on its declaration above, and held off while Firebase refuses this
+      // board's writes (Firebase::writesPaused()). Re-checked before each
+      // write, since any of them can be the one refused.
       FD_MARK("Firebase writes");
-      if (didInitialRead &&
-          (local.scoreA != lastWritten.scoreA || local.scoreB != lastWritten.scoreB ||
-           local.setA   != lastWritten.setA   || local.setB   != lastWritten.setB)) {
-        if (Firebase::writeScore(local)) {
+      auto canWrite = [&]() { return didInitialRead && !Firebase::writesPaused(); };
+      bool scoreChanged = local.scoreA != lastWritten.scoreA || local.scoreB != lastWritten.scoreB ||
+                          local.setA   != lastWritten.setA   || local.setB   != lastWritten.setB;
+      if (canWrite() && scoreChanged) {
+        // lastWritten = what Firebase holds (our last write, or the last read)
+        if (Firebase::writeScore(local, lastWritten.setA + lastWritten.setB + 1)) {
           lastWritten = local;
           lastRead = millis();
         }
       }
-      if (didInitialRead && local.winPoints != lastWrittenWP) {
+      if (canWrite() && local.winPoints != lastWrittenWP) {
         if (Firebase::writeWinPoints(local.winPoints)) lastWrittenWP = local.winPoints;
       }
-      if (didInitialRead && local.hardcap != lastWrittenHC) {
+      if (canWrite() && local.hardcap != lastWrittenHC) {
         if (Firebase::writeHardcap(local.hardcap)) lastWrittenHC = local.hardcap;
       }
-      if (didInitialRead && local.format != lastWrittenFmt) {
+      if (canWrite() && local.format != lastWrittenFmt) {
         if (Firebase::writeFormat(local.format)) lastWrittenFmt = local.format;
       }
       // Re-fires on a new set too, not just when firstServer's raw value
@@ -185,20 +194,12 @@ static void _firebaseRun() {
       // the live hub's serve indicator for the whole set, since it derives
       // serving from that per-set field and had nothing carried over to
       // read (each set is a distinct node, not inherited from the last).
+      // A read that finds the set already has a server (the friend's tool
+      // picks the serving *player*) marks it as written — see below — so
+      // that choice is only replaced when the board's serving team changes.
       uint8_t activeSetIdx = local.setA + local.setB;
-      if (didInitialRead && (local.firstServer != lastWrittenFS || activeSetIdx != lastWrittenFSSet)) {
+      if (canWrite() && (local.firstServer != lastWrittenFS || activeSetIdx != lastWrittenFSSet)) {
         if (Firebase::writeFirstServer(local)) { lastWrittenFS = local.firstServer; lastWrittenFSSet = activeSetIdx; }
-      }
-
-      TeamNames::Names names = TeamNames::get();
-      if (didInitialRead &&
-          (strcmp(names.teamA, lastWrittenNames.teamA)       != 0 ||
-           strcmp(names.teamB, lastWrittenNames.teamB)       != 0 ||
-           strcmp(names.playerA1, lastWrittenNames.playerA1) != 0 ||
-           strcmp(names.playerA2, lastWrittenNames.playerA2) != 0 ||
-           strcmp(names.playerB1, lastWrittenNames.playerB1) != 0 ||
-           strcmp(names.playerB2, lastWrittenNames.playerB2) != 0)) {
-        if (Firebase::writeTeamNames(names)) lastWrittenNames = names;
       }
 
       // Push this board's own active timer (or its absence, on natural
@@ -206,7 +207,7 @@ static void _firebaseRun() {
       // Timer key, e.g. "a/timeout" - carries the calling team too.
       const char* localTimerType = ScoreActions::activeTimerKey();
       String localTimerStr = localTimerType ? String(localTimerType) : String("");
-      if (didInitialRead && localTimerStr != lastWrittenTimerType) {
+      if (canWrite() && localTimerStr != lastWrittenTimerType) {
         if (Firebase::writeTimerState(localTimerType)) {
           lastWrittenTimerType    = localTimerStr;
           // We just authored this value ourselves — treat it as already
@@ -215,6 +216,14 @@ static void _firebaseRun() {
           // scratch every poll interval instead of counting down).
           lastSeenRemoteTimerType = localTimerStr;
         }
+      }
+
+      // End-of-match validation (ScoreActions' Validation): result_validated
+      // follows the board's own validation, and is deleted once it's dropped.
+      uint32_t valNonce = ScoreActions::validatedNonce(local);
+      if (canWrite() && valNonce != lastWrittenValNonce) {
+        FD_MARK("Firebase::writeValidation");
+        if (Firebase::writeValidation(valNonce, local)) lastWrittenValNonce = valNonce;
       }
 
       // Log this board's own changes into event_history, once the matching
@@ -228,7 +237,7 @@ static void _firebaseRun() {
                             local.scoreA != lastLogged.scoreA || local.scoreB != lastLogged.scoreB ||
                             local.setA   != lastLogged.setA   || local.setB   != lastLogged.setB   ||
                             localTimerStr != lastLoggedTimer;
-      if (didInitialRead && historyBaseValid && historyChanged && scoreCommitted &&
+      if (canWrite() && historyBaseValid && historyChanged && scoreCommitted &&
           localTimerStr == lastWrittenTimerType &&
           (!historyFailed || millis() - lastHistoryFailMs >= 2000)) {
         FD_MARK("EventHistory::sync");
@@ -262,11 +271,15 @@ static void _firebaseRun() {
       if (!didInitialRead || (now - lastRead) >= interval) {
         lastRead = now;
         Score db = local;
-        FD_MARK("Firebase::readScore");
-        if (Firebase::readScore(db)) {
+        // The one network read of the poll — readScore() and the
+        // names/timer/result reads below all parse what it fetched.
+        FD_MARK("Firebase::fetchMatch");
+        bool fetched = Firebase::fetchMatch();
+        if (fetched && Firebase::readScore(db)) {
           FD_MARK("readScore returned OK");
           consecutiveErrors = 0;
           didInitialRead = true;
+          ScoreActions::setValidationRequired(Firebase::validationRequired());
           if (db.scoreA      != lastWritten.scoreA     || db.scoreB     != lastWritten.scoreB   ||
               db.setA        != lastWritten.setA        || db.setB       != lastWritten.setB     ||
               db.firstServer != lastWritten.firstServer || db.winPoints  != lastWritten.winPoints ||
@@ -317,6 +330,13 @@ static void _firebaseRun() {
             lastWrittenHC  = db.hardcap;
             lastWrittenFmt = db.format;
             lastWrittenFS  = db.firstServer;
+          }
+          // The active set already has a starting_server (maybe a specific
+          // player, from the friend's tool): it counts as written, so the
+          // board only replaces it when its own serving team changes.
+          if (Firebase::activeSetHasServer()) {
+            lastWrittenFS    = db.firstServer;
+            lastWrittenFSSet = db.setA + db.setB;
           }
           freshScoreRead = false;
           if (!historyBaseValid) {
@@ -431,6 +451,17 @@ static void _firebaseRun() {
             lastLoggedTimer         = remoteTimerType;
           }
           freshTimerRead = false;
+        }
+
+        // RoundnetFranceConnect's answer to the last confirmed result — only
+        // polled while one is awaited (see ScoreActions::answerNonce()).
+        uint32_t awaited = ScoreActions::answerNonce();
+        if (awaited != 0) {
+          String nonce, msg, nextA, nextB;
+          bool rejected = false;
+          FD_MARK("Firebase::readResult");
+          if (Firebase::readResult(nonce, rejected, msg, nextA, nextB) && nonce == Firebase::nonceHex(awaited))
+            ScoreActions::applyResult(awaited, rejected, msg.c_str(), nextA.c_str(), nextB.c_str());
         }
       }
     } else {
@@ -718,9 +749,43 @@ void loop() {
     if (anySetPlayed) ScoreActions::clearIntroDismissed();
   }
 
+  // Where both teams play next, from RoundnetFranceConnect's answer to a
+  // validated result (ScoreActions' Validation) — runs on its own for
+  // RESULT_SHOW_MS, over whatever the court shows meanwhile (usually the next
+  // match, which RFC hands the court to right after recording).
+  ScoreActions::tickValidation();
+  static bool     prevResult       = false;
+  static uint32_t resultStartMs    = 0;
+  static uint32_t lastResultRev    = 0;
+  static uint32_t lastResultFrame  = 0;
+  bool result = !timeoutActive && !medicalActive && !timerActive && ScoreActions::resultScreenActive();
+  if (result) {
+    uint32_t now = millis();
+    uint32_t rev = ScoreActions::validationRev();
+    if (!prevResult || rev != lastResultRev) { resultStartMs = now; lastResultRev = rev; }
+    if (now - lastResultFrame >= 16) {
+      lastResultFrame = now;
+      ScoreActions::ResultView v;
+      ScoreActions::resultView(v);
+      SCORE_LOCK();
+      if (v.rejected && !v.msg[0])
+        LED::showResultMark(LED::MARK_REJECTED, now - resultStartMs);
+      else if (!v.rejected && !v.nextA[0] && !v.nextB[0])
+        LED::showResultMark(LED::MARK_RECORDED, now - resultStartMs);
+      else
+        LED::showResultMarquee(v.nameA, v.nextA, v.nameB, v.nextB, v.msg, v.rejected, now - resultStartMs);
+      SCORE_UNLOCK();
+    }
+  } else if (prevResult) {
+    SCORE_LOCK();
+    LED::update(currentScore);
+    SCORE_UNLOCK();
+  }
+  prevResult = result;
+
   ScoreActions::tickServerSelect();
   static bool prevServerSelect = false;
-  bool serverSelect = !timeoutActive && !medicalActive && !timerActive && ScoreActions::isServerSelectActive();
+  bool serverSelect = !timeoutActive && !medicalActive && !timerActive && !result && ScoreActions::isServerSelectActive();
   if (serverSelect) {
     static uint32_t lastPromptUpdate = 0;
     uint32_t now = millis();
@@ -737,7 +802,7 @@ void loop() {
   }
   prevServerSelect = serverSelect;
 
-  bool introActive = !timeoutActive && !medicalActive && !timerActive && !serverSelect &&
+  bool introActive = !timeoutActive && !medicalActive && !timerActive && !result && !serverSelect &&
                       !ScoreActions::isIntroDismissed() && TeamNames::hasAnyTeamName() &&
                       matchNotStarted && (int32_t)(millis() - introResumeAt) >= 0;
   ScoreActions::setIntroShowing(introActive);
@@ -763,7 +828,12 @@ void loop() {
   // and nothing else owns the display. State-derived like the marquee: it
   // ends by itself on reset or a correction that un-ends the match. Restarts
   // from "SET 1" whenever it resumes (e.g. after a timeout).
-  static constexpr uint32_t MATCH_END_HOLD_MS = 3000;
+  // On a synced board, each pass of the recap is followed by a second screen
+  // for VALIDATE_SCREEN_MS: "OK? / HOLD" until the result is confirmed (a
+  // pedal hold jumps straight to it and keeps it up while it fills/drains),
+  // then the check mark (or cross) for the validation's state.
+  static constexpr uint32_t MATCH_END_HOLD_MS  = 3000;
+  static constexpr uint32_t VALIDATE_SCREEN_MS = 12000;
   static bool     matchOverSeen    = false;
   static uint32_t matchOverSinceMs = 0;
   static bool     prevSummary      = false;
@@ -776,15 +846,44 @@ void loop() {
   if (!matchOver)          matchOverSeen = false;
   else if (!matchOverSeen) { matchOverSeen = true; matchOverSinceMs = millis(); }
 
-  bool otherDisplay = timeoutActive || medicalActive || timerActive || serverSelect || introActive;
-  bool summary = matchOver && !otherDisplay && millis() - matchOverSinceMs >= MATCH_END_HOLD_MS;
+  bool otherDisplay = timeoutActive || medicalActive || timerActive || result || serverSelect || introActive;
+  float holdFill = ScoreActions::holdProgress();
+  bool summary = matchOver && !otherDisplay &&
+                 (millis() - matchOverSinceMs >= MATCH_END_HOLD_MS || holdFill > 0.0f);
   if (summary) {
+    static uint32_t lastValRev = 0;
     uint32_t now = millis();
     if (!prevSummary) summaryStartMs = now;
     if (!prevSummary || now - lastSummaryFrame >= 16) {  // ~60 fps for smooth fades
       lastSummaryFrame = now;
+      ScoreActions::Validation val = ScoreActions::validationState();
       SCORE_LOCK();
-      LED::showMatchSummary(currentScore, now - summaryStartMs);
+      uint32_t recapMs = (uint32_t)finishedSetCount(currentScore) * 2u * LED::SUMMARY_SCREEN_MS;
+      if (!ScoreActions::validationEnabled() && val == ScoreActions::Validation::NONE) {
+        LED::showMatchSummary(currentScore, now - summaryStartMs);
+      } else {
+        // No answer from the tournament app: the second screen first says so
+        // in red (once across), then asks again — "OK? / HOLD" retries.
+        static const char* NO_ANSWER_MSG = "PAS DE REPONSE - VOIR L'ORGANISATION";
+        bool noAnswer = val == ScoreActions::Validation::NO_ANSWER;
+        uint32_t failMs = noAnswer ? LED::resultMarqueeMs("", "", "", "", NO_ANSWER_MSG, true) : 0;
+        // Confirm/answer, or a pedal being held: (re)start on the second
+        // screen — on its prompt directly while held.
+        uint32_t rev = ScoreActions::validationRev();
+        if (rev != lastValRev) { lastValRev = rev; summaryStartMs = now - recapMs; }
+        if (holdFill > 0.0f) summaryStartMs = now - recapMs - failMs;
+        uint32_t t = (now - summaryStartMs) % (recapMs + failMs + VALIDATE_SCREEN_MS);
+        if (t < recapMs)
+          LED::showMatchSummary(currentScore, t);
+        else if (t < recapMs + failMs)
+          LED::showResultMarquee("", "", "", "", NO_ANSWER_MSG, true, t - recapMs);
+        else if (val == ScoreActions::Validation::NONE || noAnswer)
+          LED::showValidatePrompt(holdFill);
+        else
+          LED::showResultMark(val == ScoreActions::Validation::REJECTED ? LED::MARK_REJECTED :
+                              val == ScoreActions::Validation::RECORDED ? LED::MARK_RECORDED : LED::MARK_SENT,
+                              t - recapMs);
+      }
       SCORE_UNLOCK();
     }
   } else if (prevSummary && !otherDisplay) {

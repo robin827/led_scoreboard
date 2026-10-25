@@ -25,8 +25,13 @@ static uint16_t _pollIntervalSec   = 3;
 static String         _pendingChannel       = "";
 static volatile bool  _channelChangePending = false;
 
-// Shared SSL client — reused across read and write to avoid memory leaks
+// Shared SSL client and HTTP client, kept open between requests (HTTP
+// keep-alive): a TLS handshake costs ~0.5-1.5s on the ESP32, far more than a
+// request on an open connection. The HTTPClient must be the same object for
+// every request — its destructor closes the connection. Only the Firebase
+// task uses them.
 static WiFiClientSecure* _client = nullptr;
+static HTTPClient        _http;
 
 inline WiFiClientSecure* _getClient() {
   if (_client == nullptr) {
@@ -38,8 +43,41 @@ inline WiFiClientSecure* _getClient() {
 }
 
 inline void _resetClient() {
+  if (_client == nullptr) return;
+  _http.end();      // drops request state; _http points at _client until the next begin()
+  _client->stop();
   delete _client;
   _client = nullptr;
+}
+
+// One request on the shared connection. The whole response is always read,
+// even when the caller doesn't want it, so the connection is clean for the
+// next request. A connection Firebase closed while idle may only show up as
+// a failed request, so a failure on a reused connection is retried once on a
+// fresh one (every request here is a GET/PUT/PATCH/POST that is safe to repeat).
+inline int _send(const char* method, const String& url, const String& body = String(),
+                 String* response = nullptr, String* dateHeader = nullptr,
+                 uint16_t timeoutMs = 8000, const char* contentType = "application/json") {
+  static const char* HEADER_KEYS[] = {"Date"};
+  for (int attempt = 0; ; attempt++) {
+    bool reused = _client != nullptr && _client->connected();
+    if (!_http.begin(*_getClient(), url)) { _resetClient(); return -1; }
+    _http.setReuse(true);
+    _http.setTimeout(timeoutMs);
+    _http.collectHeaders(HEADER_KEYS, 1);
+    if (strcmp(method, "GET") != 0) _http.addHeader("Content-Type", contentType);
+    int code = _http.sendRequest(method, body);
+    if (code > 0) {
+      String payload = _http.getString();
+      if (response)   *response   = payload;
+      if (dateHeader) *dateHeader = _http.header("Date");
+    }
+    _http.end();
+    if (code > 0) return code;
+    _resetClient();
+    if (!reused || attempt > 0) return code;
+    Serial.printf("[Firebase] %s failed on a reused connection (%d), retrying\n", method, code);
+  }
 }
 
 // ── Account (Firebase Auth) ───────────────────────────────────────────────
@@ -150,37 +188,46 @@ inline String _url(const String& channel, const String& subPath, const char* que
   return url;
 }
 
-// A 401 on a write means the ID token expired or was revoked — refresh on the
-// next tick instead of waiting for the scheduled renewal.
+// Write access. A write refused with 401 (no account, token expired or
+// revoked, or the account's org doesn't list this channel) pauses every
+// write for WRITE_DENIED_PAUSE_MS — a failed write is otherwise retried on
+// the next 100ms loop pass, hammering Firebase — and shows on the portal
+// (/status's fbWriteDenied). Only a token Firebase has
+// already accepted can have expired, so only then is a refresh forced: a
+// fresh token being refused means no permission, and refreshing it again
+// would loop (refresh, refused, refresh...). A new token ends the pause.
+static constexpr uint32_t WRITE_DENIED_PAUSE_MS = 30000;
+static volatile bool     _writeDenied   = false;  // last write refused, none accepted since
+static uint32_t          _writeDeniedAt = 0;
+static bool              _tokenAccepted = false;  // a write with the current token succeeded
+
 inline void _checkAuthCode(int code) {
-  if (code == 401 && _idToken.length()) {
+  if (code >= 200 && code < 300) { _writeDenied = false; _tokenAccepted = true; return; }
+  if (code != 401) return;
+  _writeDenied   = true;
+  _writeDeniedAt = millis();
+  if (_idToken.length() && _tokenAccepted) {
     Serial.println("[Firebase] Write rejected (401) — refreshing the token");
+    _tokenAccepted = false;
     if (!_authFailed) _nextAuthAt = millis();
-  } else if (code == 401) {
+  } else if (_idToken.length()) {
+    Serial.println("[Firebase] Write rejected (401) — this account can't write to this court, see portal Settings → Firebase");
+  } else {
     Serial.println("[Firebase] Write rejected (401) — no account set, see portal Settings → Firebase");
   }
 }
 
+inline bool writesPaused() { return _writeDenied && millis() - _writeDeniedAt < WRITE_DENIED_PAUSE_MS; }
+inline bool writeDenied()  { return _writeDenied; }
+
 inline int _httpsJson(const char* method, const String& url, const String& body, JsonDocument& out,
                       JsonDocument* filter = nullptr, const char* contentType = "application/json") {
-  HTTPClient http;
-  http.setTimeout(10000);
-  http.setReuse(false);
-  if (!http.begin(*_getClient(), url)) { _resetClient(); return -1; }
-  int code;
-  if (strcmp(method, "POST") == 0) {
-    http.addHeader("Content-Type", contentType);
-    code = http.POST(body);
-  } else {
-    code = http.GET();
-  }
+  String payload;
+  int code = _send(method, url, body, &payload, nullptr, 10000, contentType);
   if (code > 0) {
-    String payload = http.getString();
     if (filter) deserializeJson(out, payload, DeserializationOption::Filter(*filter));
     else        deserializeJson(out, payload);
   }
-  http.end();
-  if (code < 0) _resetClient();
   return code;
 }
 
@@ -285,6 +332,8 @@ inline bool _loadAccount(const String& uid) {
 inline void _gotIdToken(const String& idToken, long expiresIn) {
   _idToken    = idToken;
   _authFailed = false;
+  _tokenAccepted = false;
+  if (_writeDenied) _writeDeniedAt = millis() - WRITE_DENIED_PAUSE_MS;  // retry with it now
   _nextAuthAt = millis() + (uint32_t)max(60L, expiresIn - 300) * 1000UL;
 }
 
@@ -551,9 +600,35 @@ inline int64_t _parseHttpDateToEpochMs(const String& date) {
   return epochSec * 1000LL;
 }
 
-// ── Lecture du score depuis Firebase ──────────────────────────────────────
+// ── Lecture du match depuis Firebase ──────────────────────────────────────
+// One poll = fetchMatch(), then readScore()/readTimerState()/readTeamNames()/
+// readResult() parse what it fetched — no request of their own.
+//
+// The match node isn't fetched whole: event_history (the friend's tool's and
+// this board's point log, up to 200 entries, ~10 KB late in a match) is by
+// far its biggest child and the poll never needs it. The REST API can't
+// leave out one child, but it can filter children by key range, so the poll
+// is two GETs on the same connection: keys up to "active_set" (just
+// active_set — "admin_settings" sorts after it), and keys from "f" on
+// (game_settings, rfc_result, score, teams_info, timer,
+// validation_required...). Neither range includes event_history.
 
-inline bool readScore(Score& score) {
+static JsonDocument _match;               // the last fetchMatch()'s result
+static bool         _matchValid = false;
+static int64_t      _matchServerNowMs = 0; // Firebase's clock at that fetch, 0 if unknown
+
+// Numbers as the friend's tool sometimes writes them: as strings.
+inline int _num(JsonVariantConst v, int fallback = 0) {
+  if (v.is<const char*>()) {
+    const char* s = v.as<const char*>();
+    return (s && s[0]) ? atoi(s) : fallback;
+  }
+  if (v.is<int>() || v.is<float>()) return v.as<int>();
+  return fallback;
+}
+
+inline bool fetchMatch() {
+  _matchValid = false;
   String channel = getChannel();
   if (channel.isEmpty()) {
     Serial.println("[Firebase] No channel configured");
@@ -564,7 +639,7 @@ inline bool readScore(Score& score) {
     Serial.println("[Firebase] Not connected");
     return false;
   }
-  
+
   // Vérifie que l'IP STA est valide (pas 0.0.0.0)
   IPAddress localIP = WiFi.localIP();
   if (localIP[0] == 0) {
@@ -572,151 +647,125 @@ inline bool readScore(Score& score) {
     return false;
   }
 
-  HTTPClient http;
-  http.setTimeout(10000);
-  http.setReuse(false);
-
-  String url = _url(channel, "", "shallow=false");
-
-  if (!http.begin(*_getClient(), url)) {
-    Serial.println("[Firebase] Failed to begin HTTP (DNS error?)");
-    _resetClient();
-    return false;
+  String head, rest, date;
+  int code = _send("GET", _url(channel, "", "orderBy=%22%24key%22&endAt=%22active_set%22"), "", &head, nullptr, 10000);
+  if (code == 200) {
+    code = _send("GET", _url(channel, "", "orderBy=%22%24key%22&startAt=%22f%22"), "", &rest, &date, 10000);
   }
-
-  int code = http.GET();
-
   if (code != 200) {
     Serial.printf("[Firebase] Failed to read match: %d\n", code);
-    http.end();
-    if (code < 0) {
-      Serial.println("[Firebase] Network/SSL/DNS error, recreating client");
-      _resetClient();
-    }
     return false;
   }
 
-  String payload = http.getString();
-  http.end();
+  JsonDocument filter;
+  filter["score"]               = true;
+  filter["game_settings"]       = true;
+  filter["timer"]               = true;
+  filter["rfc_result"]          = true;
+  filter["validation_required"] = true;
+  for (const char* side : {"team_a", "team_b"}) {
+    filter["teams_info"][side]["name"]     = true;
+    filter["teams_info"][side]["player_1"] = true;
+    filter["teams_info"][side]["player_2"] = true;
+  }
+  _match.clear();
+  if (deserializeJson(_match, rest, DeserializationOption::Filter(filter)) != DeserializationError::Ok) {
+    Serial.println("[Firebase] Failed to parse match");
+    return false;
+  }
+  JsonDocument headDoc;
+  deserializeJson(headDoc, head);
+  _match["active_set"] = _num(headDoc["active_set"]);
 
-  // Parse active_set
-  int idxActiveSet = payload.indexOf("\"active_set\":");
-  if (idxActiveSet < 0) {
+  _matchServerNowMs = _parseHttpDateToEpochMs(date);
+  _matchValid = true;
+  return true;
+}
+
+// match-<channel>/validation_required as of the last successful readScore().
+static volatile bool _validationRequired = false;
+inline bool validationRequired() { return _validationRequired; }
+
+// Whether the active set had a starting_server as of the last successful
+// readScore() — see writeFirstServer().
+static bool _activeSetHasServer = false;
+inline bool activeSetHasServer() { return _activeSetHasServer; }
+
+inline bool readScore(Score& score) {
+  if (!_matchValid) return false;
+
+  int activeSet = _match["active_set"].as<int>();
+  if (activeSet < 1) {
     Serial.println("[Firebase] No active_set found");
     return false;
   }
-  int activeSet = payload.substring(idxActiveSet + 13).toInt();
-  
-  if (activeSet < 1) {
-    Serial.println("[Firebase] Invalid active_set");
-    return false;
-  }
 
-  // Parse le set actif
-  String setKey = "\"set_" + String(activeSet) + "\":{";
-  int idxSet = payload.indexOf(setKey);
-  if (idxSet < 0) {
-    Serial.printf("[Firebase] Set %d not found\n", activeSet);
-    return false;
-  }
+  // A missing set or score is 0: the friend's tool raises active_set before
+  // the new set has a node, and writes each team's score as its own leaf, so
+  // a fresh set often reads as absent, or as {"team_a_score": 1} alone.
+  JsonVariantConst sets = _match["score"];
+  JsonVariantConst cur  = sets["set_" + String(activeSet)];
 
-  int searchStart = idxSet;
-  int idxA = payload.indexOf("\"team_a_score\":", searchStart);
-  int idxB = payload.indexOf("\"team_b_score\":", searchStart);
+  score.scoreA = (uint8_t)constrain(_num(cur["team_a_score"]), 0, 99);
+  score.scoreB = (uint8_t)constrain(_num(cur["team_b_score"]), 0, 99);
 
-  if (idxA < 0 || idxB < 0) {
-    Serial.println("[Firebase] Scores not found");
-    return false;
-  }
-
-  score.scoreA = payload.substring(idxA + 15).toInt();
-  score.scoreB = payload.substring(idxB + 15).toInt();
-
-  // Parse game_settings.win_points and hardcap
-  int idxWP = payload.indexOf("\"win_points\":");
-  if (idxWP >= 0) {
-    int valStart = idxWP + 13;
-    while (valStart < (int)payload.length() && (payload[valStart] == ' ' || payload[valStart] == '"')) valStart++;
-    int wp = payload.substring(valStart).toInt();
-    if (wp >= 5 && wp <= 99) score.winPoints = wp;
-  }
-  int idxHC = payload.indexOf("\"hardcap\":");
-  if (idxHC >= 0) {
-    int valStart = idxHC + 10;
-    while (valStart < (int)payload.length() && (payload[valStart] == ' ' || payload[valStart] == '"')) valStart++;
-    int hc = payload.substring(valStart).toInt();
-    if (hc == 0 || (hc >= 5 && hc <= 99)) score.hardcap = (uint8_t)hc;
-  }
-  // Parse game_settings.set_mode (this board's own "format": 0=BO1, 1=2 sets,
+  // game_settings.win_points and hardcap
+  JsonVariantConst gs = _match["game_settings"];
+  int wp = _num(gs["win_points"], -1);
+  if (wp >= 5 && wp <= 99) score.winPoints = wp;
+  int hc = _num(gs["hardcap"], -1);
+  if (hc == 0 || (hc >= 5 && hc <= 99)) score.hardcap = (uint8_t)hc;
+  // game_settings.set_mode (this board's own "format": 0=BO1, 1=2 sets,
   // 2=BO3) — same node other tools call "Game Mode"/"set_mode", see
   // _parseSetMode() above for why the values aren't a simple number match.
-  int idxSM = payload.indexOf("\"set_mode\":");
-  if (idxSM >= 0) {
-    int valStart = idxSM + 11;
-    while (valStart < (int)payload.length() && payload[valStart] == ' ') valStart++;
-    String smVal;
-    if (valStart < (int)payload.length() && payload[valStart] == '"') {
-      int q2 = payload.indexOf('"', valStart + 1);
-      if (q2 > valStart) smVal = payload.substring(valStart + 1, q2);
-    } else {
-      int end = valStart;
-      while (end < (int)payload.length() && payload[end] != ',' && payload[end] != '}') end++;
-      smVal = payload.substring(valStart, end);
-      smVal.trim();
-    }
-    if (smVal.length() > 0) score.format = _parseSetMode(smVal);
-  }
+  JsonVariantConst sm = gs["set_mode"];
+  String smVal = sm.is<const char*>() ? String(sm.as<const char*>())
+               : sm.isNull()          ? String("")
+                                      : String(_num(sm));
+  smVal.trim();
+  if (smVal.length() > 0) score.format = _parseSetMode(smVal);
 
-  // Parse starting_server: "a"/"b" → Team A (firstServer=0), "c"/"d" → Team B (firstServer=1)
-  int idxSS = payload.indexOf("\"starting_server\":", searchStart);
-  if (idxSS >= 0) {
-    int q1 = payload.indexOf('"', idxSS + 18) + 1;
-    int q2 = payload.indexOf('"', q1);
-    if (q1 > 0 && q2 > q1) {
-      String sv = payload.substring(q1, q2);
-      score.firstServer = (sv == "a" || sv == "b") ? 0 : 1;
-    }
-  }
+  // starting_server: "a"/"b" → Team A (firstServer=0), "c"/"d" → Team B (firstServer=1)
+  const char* sv = cur["starting_server"] | "";
+  _activeSetHasServer = sv[0] != '\0';
+  if (sv[0]) score.firstServer = (strcmp(sv, "a") == 0 || strcmp(sv, "b") == 0) ? 0 : 1;
 
   // Compte les sets gagnés (+ capture leur score final dans histA/histB)
   score.setA = 0;
   score.setB = 0;
 
   for (int i = 1; i < activeSet; i++) {
-    String prevSetKey = "\"set_" + String(i) + "\":{";
-    int prevIdx = payload.indexOf(prevSetKey);
-    if (prevIdx >= 0) {
-      int prevIdxA = payload.indexOf("\"team_a_score\":", prevIdx);
-      int prevIdxB = payload.indexOf("\"team_b_score\":", prevIdx);
+    JsonVariantConst prev = sets["set_" + String(i)];
+    if (!prev.is<JsonObjectConst>()) continue;
+    int prevScoreA = _num(prev["team_a_score"]);
+    int prevScoreB = _num(prev["team_b_score"]);
 
-      if (prevIdxA >= 0 && prevIdxB >= 0) {
-        int prevScoreA = payload.substring(prevIdxA + 15).toInt();
-        int prevScoreB = payload.substring(prevIdxB + 15).toInt();
+    if (prevScoreA > prevScoreB) {
+      score.setA++;
+    } else if (prevScoreB > prevScoreA) {
+      score.setB++;
+    }
 
-        if (prevScoreA > prevScoreB) {
-          score.setA++;
-        } else if (prevScoreB > prevScoreA) {
-          score.setB++;
-        }
-
-        // Without this, `score` (the `db` passed in by firebaseTask) keeps
-        // whatever histA/histB it started with — which, on a set transition
-        // driven by an external writer rather than this board's own
-        // nextSet(), is the PRE-transition (stale, possibly empty) history.
-        // applyFromDatabase() then replaces currentScore wholesale with that
-        // stale history, and this board's own next writeScore() rebuilds
-        // score/set_<N> in Firebase straight from it — silently overwriting
-        // the real completed-set score with 0 (or whatever was left in the
-        // array). Capturing it here, from the exact same parse already used
-        // to count setA/setB, keeps the board's history in sync with
-        // whichever writer actually created the set.
-        if (i - 1 < 3) {
-          score.histA[i - 1] = (uint8_t)constrain(prevScoreA, 0, 99);
-          score.histB[i - 1] = (uint8_t)constrain(prevScoreB, 0, 99);
-        }
-      }
+    // Without this, `score` (the `db` passed in by firebaseTask) keeps
+    // whatever histA/histB it started with — which, on a set transition
+    // driven by an external writer rather than this board's own
+    // nextSet(), is the PRE-transition (stale, possibly empty) history.
+    // applyFromDatabase() then replaces currentScore wholesale with that
+    // stale history, and this board's own next writeScore() rebuilds
+    // score/set_<N> in Firebase straight from it — silently overwriting
+    // the real completed-set score with 0 (or whatever was left in the
+    // array). Capturing it here, from the exact same parse already used
+    // to count setA/setB, keeps the board's history in sync with
+    // whichever writer actually created the set.
+    if (i - 1 < 3) {
+      score.histA[i - 1] = (uint8_t)constrain(prevScoreA, 0, 99);
+      score.histB[i - 1] = (uint8_t)constrain(prevScoreB, 0, 99);
     }
   }
+
+  // Set by RoundnetFranceConnect while a tournament match is on this court —
+  // see ScoreActions' Validation. Absent (or anything but true) = not asked.
+  _validationRequired = _match["validation_required"].is<bool>() && _match["validation_required"].as<bool>();
 
   Serial.printf("[Firebase] Read OK: A=%d B=%d (sets %d-%d)\n",
     score.scoreA, score.scoreB, score.setA, score.setB);
@@ -725,19 +774,24 @@ inline bool readScore(Score& score) {
 }
 
 // ── Ecriture du score vers Firebase ───────────────────────────────────────
-// starting_server/starting_receiver for the active set must be written in
-// THIS SAME PATCH, not a separate request — writeScore's PATCH replaces the
-// entire "score" node wholesale (Firebase PATCH semantics: a top-level key's
-// value is written as-is, not deep-merged), so if this call only ever wrote
-// team_a_score/team_b_score, every score update would silently wipe whatever
-// starting_server the board (or anything else) had previously written for
-// the active set — leaving the live-scores page's serve indicator missing
-// on every ordinary point, not just occasionally. Same bug class already
-// found and fixed in the manager server's firebaseBridge.js (see that
-// file's "used to be two separate PATCH requests" note); this is the
-// FIREBASE-mode (direct board→Firebase) equivalent, previously unfixed.
+// A multi-path PATCH ("score/set_1/team_a_score": ...): only the leaves this
+// board owns are written. A plain "score": {...} key would replace the whole
+// score node (Firebase PATCH semantics: a key's value is written as-is, not
+// deep-merged), deleting what other writers keep there — the friend's tool's
+// pre-created set_1..set_7 placeholders, squad_score, starting_team — so a
+// set it later advanced into had no node at all. Same change as the manager
+// server's firebaseBridge.js pushUpToFirebase().
+// starting_server/starting_receiver aren't part of it: the friend's tool
+// stores the serving *player* there (a/b = team A's, c/d = team B's), and this
+// board only knows the team, so rewriting them on every point replaced the
+// tool's choice with a/c. writeFirstServer() writes them, only when the
+// board's serving team actually changes (or the set has none yet).
+// prevActiveSet: the active set Firebase held before this write. When the
+// board went back (reset, previous set), the sets it left are zeroed —
+// replacing the whole node used to delete them, and otherwise their old
+// scores would greet whoever advances into them again.
 
-inline bool writeScore(const Score& score) {
+inline bool writeScore(const Score& score, int prevActiveSet = 0) {
   String channel = getChannel();
   if (channel.isEmpty()) {
     Serial.println("[Firebase] No channel configured");
@@ -748,46 +802,28 @@ inline bool writeScore(const Score& score) {
   IPAddress localIP = WiFi.localIP();
   if (localIP[0] == 0) return false;
 
-  HTTPClient http;
-  http.setTimeout(5000);
-  http.setReuse(false);
-
-  String url = _url(channel, "");
-
-  if (!http.begin(*_getClient(), url)) {
-    Serial.println("[Firebase] Write: failed to begin HTTP");
-    _resetClient();
-    return false;
-  }
-
-  http.addHeader("Content-Type", "application/json");
-
   // Build payload: active_set + all historical sets + current set
   JsonDocument doc;
   int activeSet = score.setA + score.setB + 1;
   doc["active_set"] = activeSet;
 
-  for (int i = 0; i < activeSet - 1; i++) {
-    String key = "set_" + String(i + 1);
-    doc["score"][key]["team_a_score"] = score.histA[i];
-    doc["score"][key]["team_b_score"] = score.histB[i];
-  }
-  String currentKey = "set_" + String(activeSet);
-  doc["score"][currentKey]["team_a_score"] = score.scoreA;
-  doc["score"][currentKey]["team_b_score"] = score.scoreB;
-  doc["score"][currentKey]["starting_server"]   = (score.firstServer == 0) ? "a" : "c";
-  doc["score"][currentKey]["starting_receiver"] = (score.firstServer == 0) ? "c" : "a";
+  auto setLeaves = [&doc](int n, uint8_t a, uint8_t b) {
+    String key = "score/set_" + String(n);
+    doc[key + "/team_a_score"] = a;
+    doc[key + "/team_b_score"] = b;
+  };
+  for (int i = 0; i < activeSet - 1; i++) setLeaves(i + 1, score.histA[i], score.histB[i]);
+  setLeaves(activeSet, score.scoreA, score.scoreB);
+  for (int n = activeSet + 1; n <= prevActiveSet; n++) setLeaves(n, 0, 0);
 
   String payload;
   serializeJson(doc, payload);
 
-  int code = http.PATCH(payload);
-  http.end();
+  int code = _send("PATCH", _url(channel, ""), payload, nullptr, nullptr, 5000);
   _checkAuthCode(code);
 
   if (code < 0) {
-    Serial.printf("[Firebase] Write error: %d, recreating client\n", code);
-    _resetClient();
+    Serial.printf("[Firebase] Write error: %d\n", code);
     return false;
   }
 
@@ -797,10 +833,10 @@ inline bool writeScore(const Score& score) {
 }
 
 // ── Write starting_server + starting_receiver for the active set in one PATCH ──
-// writeScore() above now also carries these fields on every score push, so
-// this is only still needed for the standalone case: firstServer changes
-// (or a new set starts) without scoreA/scoreB/setA/setB also changing on
-// that same tick — main.cpp gates the call on exactly that condition.
+// The only writer of these fields (see writeScore() above). main.cpp calls it
+// when the board's serving team differs from what Firebase holds for the
+// active set, or that set has no starting_server yet — never just to repeat
+// the team Firebase already has, which would replace the tool's player.
 // firstServer=0 (Team A / yellow): server="a", receiver="c"
 // firstServer=1 (Team B / blue):   server="c", receiver="a"
 
@@ -823,16 +859,10 @@ inline bool writeFirstServer(const Score& score) {
   String payload;
   serializeJson(doc, payload);
 
-  HTTPClient http;
-  http.setTimeout(5000);
-  http.setReuse(false);
-  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
-  http.addHeader("Content-Type", "application/json");
-  int code = http.PATCH(payload);
-  http.end();
+  int code = _send("PATCH", url, payload, nullptr, nullptr, 5000);
   _checkAuthCode(code);
 
-  if (code < 0) { _resetClient(); return false; }
+  if (code < 0) return false;
   Serial.printf("[Firebase] writeFirstServer OK: server=%s receiver=%s (code %d)\n",
     serverVal, receiverVal, code);
   return code == 200;
@@ -847,16 +877,9 @@ inline bool writeHardcap(uint8_t hardcap) {
   IPAddress localIP = WiFi.localIP();
   if (localIP[0] == 0) return false;
 
-  HTTPClient http;
-  http.setTimeout(5000);
-  http.setReuse(false);
-  String url = _url(channel, "/game_settings/hardcap");
-  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
-  http.addHeader("Content-Type", "application/json");
-  int code = http.PUT(String(hardcap));
-  http.end();
+  int code = _send("PUT", _url(channel, "/game_settings/hardcap"), String(hardcap), nullptr, nullptr, 5000);
   _checkAuthCode(code);
-  if (code < 0) { _resetClient(); return false; }
+  if (code < 0) return false;
   Serial.printf("[Firebase] writeHardcap OK: %d (code %d)\n", hardcap, code);
   return code == 200;
 }
@@ -870,19 +893,10 @@ inline bool writeWinPoints(uint8_t winPoints) {
   IPAddress localIP = WiFi.localIP();
   if (localIP[0] == 0) return false;
 
-  HTTPClient http;
-  http.setTimeout(5000);
-  http.setReuse(false);
-
-  String url = _url(channel, "/game_settings/win_points");
-
-  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
-  http.addHeader("Content-Type", "application/json");
-  int code = http.PUT(String(winPoints));
-  http.end();
+  int code = _send("PUT", _url(channel, "/game_settings/win_points"), String(winPoints), nullptr, nullptr, 5000);
   _checkAuthCode(code);
 
-  if (code < 0) { _resetClient(); return false; }
+  if (code < 0) return false;
   Serial.printf("[Firebase] writeWinPoints OK: %d (code %d)\n", winPoints, code);
   return code == 200;
 }
@@ -902,17 +916,10 @@ inline bool writeFormat(uint8_t format) {
 
   const char* setMode = (format == 0) ? "1" : (format == 1) ? "2" : "3";
 
-  HTTPClient http;
-  http.setTimeout(5000);
-  http.setReuse(false);
-  String url = _url(channel, "/game_settings/set_mode");
-  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
-  http.addHeader("Content-Type", "application/json");
-  int code = http.PUT("\"" + String(setMode) + "\"");
-  http.end();
+  int code = _send("PUT", _url(channel, "/game_settings/set_mode"), "\"" + String(setMode) + "\"", nullptr, nullptr, 5000);
   _checkAuthCode(code);
 
-  if (code < 0) { _resetClient(); return false; }
+  if (code < 0) return false;
   Serial.printf("[Firebase] writeFormat OK: %s (code %d)\n", setMode, code);
   return code == 200;
 }
@@ -943,74 +950,42 @@ inline bool writeTimerState(const char* key) {
   IPAddress localIP = WiFi.localIP();
   if (localIP[0] == 0) return false;
 
-  HTTPClient http;
-  http.setTimeout(5000);
-  http.setReuse(false);
-  String url = _url(channel, "/timer");
-  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
-  http.addHeader("Content-Type", "application/json");
-
-  int code;
-  if (type == nullptr || type[0] == '\0') {
-    code = http.PUT("null"); // deletes the whole "timer" node
-  } else {
+  String payload = "null"; // deletes the whole "timer" node
+  if (type != nullptr && type[0] != '\0') {
     JsonDocument doc;
     doc["type"] = type;
     if (team) doc["team"] = team;
     doc["started_at"][".sv"] = "timestamp"; // Firebase server-timestamp sentinel
-    String payload;
+    payload = "";
     serializeJson(doc, payload);
-    // PUT (not PATCH): replaces the node wholesale so a stale started_at from
-    // a previous timer of the same type never lingers under the new one.
-    code = http.PUT(payload);
   }
-  http.end();
+  // PUT (not PATCH): replaces the node wholesale so a stale started_at from
+  // a previous timer of the same type never lingers under the new one.
+  int code = _send("PUT", _url(channel, "/timer"), payload, nullptr, nullptr, 5000);
   _checkAuthCode(code);
 
-  if (code < 0) { _resetClient(); return false; }
+  if (code < 0) return false;
   Serial.printf("[Firebase] writeTimerState OK: %s (code %d)\n", (key && key[0]) ? key : "(none)", code);
   return code == 200;
 }
 
-// Returns true on a successful read, with outType set to the timer key
-// ("timeout"/"medical"/"break", prefixed "a/"/"b/" when the node has a
-// `team`), or "" when no timer is currently active in Firebase. outElapsedMs
-// is how long that timer has already been running, computed from the node's
-// "started_at" (a Firebase server timestamp) against this same response's
-// HTTP "Date" header — both timestamps come from Firebase's own frontend, so
-// no local wall-clock/NTP sync is needed. Set to -1 (unknown) when outType
-// is "" or when either timestamp couldn't be read/parsed — callers that
-// can't trust an elapsed time should treat that the same as "just don't
-// know", not as "0 elapsed".
+// From the last fetchMatch(). Returns true on a successful read, with outType
+// set to the timer key ("timeout"/"medical"/"break", prefixed "a/"/"b/" when
+// the node has a `team`), or "" when no timer is currently active in
+// Firebase. outElapsedMs is how long that timer has already been running,
+// computed from the node's "started_at" (a Firebase server timestamp)
+// against that fetch's HTTP "Date" header — both timestamps come from
+// Firebase's own frontend, so no local wall-clock/NTP sync is needed. Set to
+// -1 (unknown) when outType is "" or when either timestamp couldn't be
+// read/parsed — callers that can't trust an elapsed time should treat that
+// the same as "just don't know", not as "0 elapsed".
 inline bool readTimerState(String& outType, long& outElapsedMs) {
   outElapsedMs = -1;
-  String channel = getChannel();
-  if (channel.isEmpty()) return false;
-  if (!WiFi.isConnected()) return false;
-  IPAddress localIP = WiFi.localIP();
-  if (localIP[0] == 0) return false;
+  if (!_matchValid) return false;
 
-  HTTPClient http;
-  http.setTimeout(8000);
-  http.setReuse(false);
-  String url = _url(channel, "/timer");
-  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
-  const char* headerKeys[] = {"Date"};
-  http.collectHeaders(headerKeys, 1);
-  int code = http.GET();
-  if (code != 200) {
-    http.end();
-    if (code < 0) _resetClient();
-    return false;
-  }
-  String payload = http.getString();
-  String dateHeader = http.header("Date");
-  http.end();
-
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, payload);
-  if (err || doc.isNull()) {
-    outType = ""; // "null" (no timer) or unexpected/unparseable shape
+  JsonVariantConst doc = _match["timer"];
+  if (!doc.is<JsonObjectConst>()) {
+    outType = ""; // no timer, or unexpected shape
     return true;
   }
   outType = String((const char*)(doc["type"] | ""));
@@ -1020,7 +995,7 @@ inline bool readTimerState(String& outType, long& outElapsedMs) {
   }
   if (outType.length() > 0 && doc["started_at"].is<int64_t>()) {
     int64_t startedAt  = doc["started_at"];
-    int64_t serverNow  = _parseHttpDateToEpochMs(dateHeader);
+    int64_t serverNow  = _matchServerNowMs;
     int64_t elapsed    = serverNow - startedAt;
     // Cap at ~24 days so this always fits the 32-bit `long` outElapsedMs is
     // declared as — real elapsed times here are at most a few minutes
@@ -1033,122 +1008,81 @@ inline bool readTimerState(String& outType, long& outElapsedMs) {
   return true;
 }
 
-// ── Write team/player names ──────────────────────────────────────────────────
-// PATCHes only match-<channel>/meta/team_a (or team_b), and only the
-// name/player_1/player_2 leaves that are actually non-empty — meta also has
-// other writers (roundnet-worlds-live's editor UI and Fwango bridge) and this
-// must never overwrite color/country/phase/court/status, nor clobber a name
-// set elsewhere with a blank one just because this board hasn't been given
-// one yet.
-
-inline bool _writeTeamSide(const String& channel, const char* side,
-                            const char* name, const char* p1, const char* p2) {
-  JsonDocument doc;
-  bool any = false;
-  if (name[0]) { doc["name"]     = name; any = true; }
-  if (p1[0])   { doc["player_1"] = p1;   any = true; }
-  if (p2[0])   { doc["player_2"] = p2;   any = true; }
-  if (!any) return true; // nothing to push for this side — not an error
-
-  String payload;
-  serializeJson(doc, payload);
-
-  HTTPClient http;
-  http.setTimeout(5000);
-  http.setReuse(false);
-  String url = _url(channel, String("/meta/") + side);
-  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
-  http.addHeader("Content-Type", "application/json");
-  int code = http.PATCH(payload);
-  http.end();
-  _checkAuthCode(code);
-
-  if (code < 0) {
-    Serial.printf("[Firebase] writeTeamNames(%s) network error: %d\n", side, code);
-    _resetClient();
-    return false;
-  }
-  if (code != 200) {
-    Serial.printf("[Firebase] writeTeamNames(%s) FAILED, HTTP %d\n", side, code);
-    return false;
-  }
-  Serial.printf("[Firebase] writeTeamNames(%s) OK\n", side);
-  return true;
-}
-
-inline bool writeTeamNames(const TeamNames::Names& n) {
-  String channel = getChannel();
-  if (channel.isEmpty()) return false;
-  if (!WiFi.isConnected()) return false;
-  IPAddress localIP = WiFi.localIP();
-  if (localIP[0] == 0) return false;
-
-  bool okA = _writeTeamSide(channel, "team_a", n.teamA, n.playerA1, n.playerA2);
-  bool okB = _writeTeamSide(channel, "team_b", n.teamB, n.playerB1, n.playerB2);
-  return okA && okB;
-}
-
 // ── Read team/player names ───────────────────────────────────────────────────
-// Reads match-<channel>/teams_info (an official feed some tournaments already
-// populate — not written by any code in this repo) and match-<channel>/meta
-// (this project's own, editor-mode-writable fallback), and fills `out` with
-// team_a/team_b's name/player_1/player_2 — preferring teams_info when a field
-// is present there, exactly like roundnet-worlds-live's index.html already
-// resolves display names (see deriveMatch()'s teamView()). Without this
-// precedence, a channel with real tournament data in teams_info but nothing
-// in meta (e.g. channel 6/7) would look empty to the board even though the
-// live hub already shows names for it.
+// From the last fetchMatch(): match-<channel>/teams_info's team_a/team_b
+// name/player_1/player_2 (written by the friend's tool and
+// RoundnetFranceConnect). Names entered on this board's portal stay on the
+// board — they're never written to Firebase. They used to go to
+// match-<channel>/meta, which nothing else read, and which then came back on
+// later matches as soon as teams_info was blanked.
 
-inline bool _fetchJson(const String& channel, const char* path, JsonDocument& doc) {
-  HTTPClient http;
-  http.setTimeout(8000);
-  http.setReuse(false);
-  String url = _url(channel, String("/") + path);
-  if (!http.begin(*_getClient(), url)) { _resetClient(); return false; }
-  int code = http.GET();
-  if (code != 200) {
-    http.end();
-    if (code < 0) _resetClient();
-    return false;
-  }
-  String payload = http.getString();
-  http.end();
-  return deserializeJson(doc, payload) == DeserializationError::Ok;
-}
-
-inline String _pickTeamField(bool haveOfficial, JsonDocument& official,
-                              bool haveMeta, JsonDocument& meta,
-                              const char* side, const char* key) {
-  if (haveOfficial) {
-    const char* v = official[side][key] | (const char*)nullptr;
-    if (v && v[0]) return String(v);
-  }
-  if (haveMeta) {
-    const char* v = meta[side][key] | (const char*)nullptr;
-    if (v && v[0]) return String(v);
-  }
-  return String("");
+inline String _pickTeamField(const char* side, const char* key) {
+  const char* v = _match["teams_info"][side][key] | (const char*)nullptr;
+  return (v && v[0]) ? String(v) : String("");
 }
 
 inline bool readTeamNames(TeamNames::Names& out) {
-  String channel = getChannel();
-  if (channel.isEmpty()) return false;
-  if (!WiFi.isConnected()) return false;
-  IPAddress localIP = WiFi.localIP();
-  if (localIP[0] == 0) return false;
+  if (!_matchValid) return false;
 
-  JsonDocument official, meta;
-  bool haveOfficial = _fetchJson(channel, "teams_info", official);
-  bool haveMeta     = _fetchJson(channel, "meta", meta);
-  if (!haveOfficial && !haveMeta) return false;
-
-  strlcpy(out.teamA,    _pickTeamField(haveOfficial, official, haveMeta, meta, "team_a", "name").c_str(),     sizeof(out.teamA));
-  strlcpy(out.playerA1, _pickTeamField(haveOfficial, official, haveMeta, meta, "team_a", "player_1").c_str(), sizeof(out.playerA1));
-  strlcpy(out.playerA2, _pickTeamField(haveOfficial, official, haveMeta, meta, "team_a", "player_2").c_str(), sizeof(out.playerA2));
-  strlcpy(out.teamB,    _pickTeamField(haveOfficial, official, haveMeta, meta, "team_b", "name").c_str(),     sizeof(out.teamB));
-  strlcpy(out.playerB1, _pickTeamField(haveOfficial, official, haveMeta, meta, "team_b", "player_1").c_str(), sizeof(out.playerB1));
-  strlcpy(out.playerB2, _pickTeamField(haveOfficial, official, haveMeta, meta, "team_b", "player_2").c_str(), sizeof(out.playerB2));
+  strlcpy(out.teamA,    _pickTeamField("team_a", "name").c_str(),     sizeof(out.teamA));
+  strlcpy(out.playerA1, _pickTeamField("team_a", "player_1").c_str(), sizeof(out.playerA1));
+  strlcpy(out.playerA2, _pickTeamField("team_a", "player_2").c_str(), sizeof(out.playerA2));
+  strlcpy(out.teamB,    _pickTeamField("team_b", "name").c_str(),     sizeof(out.teamB));
+  strlcpy(out.playerB1, _pickTeamField("team_b", "player_1").c_str(), sizeof(out.playerB1));
+  strlcpy(out.playerB2, _pickTeamField("team_b", "player_2").c_str(), sizeof(out.playerB2));
   return true;
+}
+
+// ── End-of-match validation (ScoreActions' Validation) ───────────────────────
+// result_validated = {nonce, sets: [[a, b], ...], at} for a confirmed result,
+// deleted (PUT null) once that validation is dropped. RoundnetFranceConnect
+// answers in rfc_result = {nonce, status: "recorded"|"rejected", message?,
+// next?: {team_a, team_b}} — next labels already uppercase ASCII.
+
+inline String nonceHex(uint32_t nonce) {
+  char buf[9];
+  snprintf(buf, sizeof(buf), "%08lx", (unsigned long)nonce);
+  return String(buf);
+}
+
+inline bool writeValidation(uint32_t nonce, const Score& score) {
+  String channel = getChannel();
+  if (channel.isEmpty() || !WiFi.isConnected()) return false;
+
+  String payload = "null";
+  if (nonce != 0) {
+    JsonDocument doc;
+    doc["nonce"] = nonceHex(nonce);
+    JsonArray sets = doc["sets"].to<JsonArray>();
+    for (uint8_t i = 0; i < finishedSetCount(score); i++) {
+      uint8_t a, b;
+      finishedSetScore(score, i, a, b);
+      JsonArray set = sets.add<JsonArray>();
+      set.add(a);
+      set.add(b);
+    }
+    doc["at"][".sv"] = "timestamp";
+    payload = "";
+    serializeJson(doc, payload);
+  }
+
+  int code = _send("PUT", _url(channel, "/result_validated"), payload, nullptr, nullptr, 5000);
+  _checkAuthCode(code);
+  Serial.printf("[Firebase] writeValidation(%s) HTTP %d\n", nonce ? nonceHex(nonce).c_str() : "null", code);
+  return code == 200;
+}
+
+// From the last fetchMatch(). False when there's no answer (yet) or it couldn't be read.
+inline bool readResult(String& nonce, bool& rejected, String& msg, String& nextA, String& nextB) {
+  if (!_matchValid) return false;
+  JsonVariantConst doc = _match["rfc_result"];
+  if (!doc.is<JsonObjectConst>()) return false;
+  nonce    = doc["nonce"]   | "";
+  rejected = strcmp(doc["status"] | "", "rejected") == 0;
+  msg      = doc["message"] | "";
+  nextA    = doc["next"]["team_a"] | "";
+  nextB    = doc["next"]["team_b"] | "";
+  return nonce.length() > 0;
 }
 
 } // namespace Firebase

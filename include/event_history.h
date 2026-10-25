@@ -124,23 +124,13 @@ inline bool _read(JsonDocument& doc, int64_t& serverNowMs) {
   String channel = Firebase::getChannel();
   if (channel.isEmpty() || !WiFi.isConnected() || WiFi.localIP()[0] == 0) return false;
 
-  HTTPClient http;
-  http.setTimeout(8000);
-  http.setReuse(false);
-  String url = Firebase::_url(channel, "/event_history");
-  if (!http.begin(*Firebase::_getClient(), url)) { Firebase::_resetClient(); return false; }
-  const char* headerKeys[] = {"Date"};
-  http.collectHeaders(headerKeys, 1);
-  int code = http.GET();
+  String payload, date;
+  int code = Firebase::_send("GET", Firebase::_url(channel, "/event_history"), "", &payload, &date);
   if (code != 200) {
-    http.end();
-    if (code < 0) Firebase::_resetClient();
     Serial.printf("[Firebase] event_history read FAILED: %d\n", code);
     return false;
   }
-  String payload = http.getString();
-  serverNowMs = Firebase::_parseHttpDateToEpochMs(http.header("Date"));
-  http.end();
+  serverNowMs = Firebase::_parseHttpDateToEpochMs(date);
   if (deserializeJson(doc, payload) != DeserializationError::Ok) doc.clear(); // "null" -> empty
   return true;
 }
@@ -152,16 +142,9 @@ inline bool _write(JsonDocument& doc) {
   String payload;
   serializeJson(doc, payload);
 
-  HTTPClient http;
-  http.setTimeout(8000);
-  http.setReuse(false);
-  String url = Firebase::_url(channel, "/event_history");
-  if (!http.begin(*Firebase::_getClient(), url)) { Firebase::_resetClient(); return false; }
-  http.addHeader("Content-Type", "application/json");
-  int code = http.PUT(payload);
-  http.end();
+  int code = Firebase::_send("PUT", Firebase::_url(channel, "/event_history"), payload);
   Firebase::_checkAuthCode(code);
-  if (code < 0) { Firebase::_resetClient(); return false; }
+  if (code < 0) return false;
   Serial.printf("[Firebase] event_history PUT (%u entries, code %d)\n", (unsigned)doc.size(), code);
   return code == 200;
 }

@@ -75,6 +75,13 @@ inline uint8_t finishedSetCount(const Score& s) {
   return n > 3 ? 3 : n;
 }
 
+// Final score of finished set i (0-based, < finishedSetCount()).
+inline void finishedSetScore(const Score& s, uint8_t i, uint8_t& a, uint8_t& b) {
+  bool live = i >= s.setA + s.setB;  // won but not yet nexted
+  a = live ? s.scoreA : s.histA[i];
+  b = live ? s.scoreB : s.histB[i];
+}
+
 // Match over by the board's format: BO1 after 1 set, 2 sets after 2, BO3 once
 // a team has 2 — counting a won-but-not-nexted current set, so the end is
 // seen on the winning point itself, not only after a final long-press.

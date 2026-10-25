@@ -5,6 +5,7 @@
 #include "led.h"
 #include "score_logger.h"
 #include "score_persist.h"
+#include "mode.h"
 
 extern Score currentScore;
 extern SemaphoreHandle_t scoreMutex;
@@ -41,7 +42,7 @@ static volatile bool     _breakIsPedalDriven = false;
 // Battery saver
 static volatile uint32_t _lastActivityMs   = 0;
 static uint16_t        _dimTimeoutSec       = 300;
-static bool            _dimActive           = false;
+static volatile bool   _dimActive           = false;  // read by apply() on Core 0
 static volatile bool   _wantsWake           = false;
 static uint8_t         _preSleepBrightness  = 100;
 
@@ -56,6 +57,54 @@ static volatile bool _introDismissed     = false;
 static volatile bool _serverSelectActive = false;
 static volatile uint32_t _serverSelectStartMs = 0;
 static constexpr uint32_t SERVER_SELECT_TIMEOUT_MS = 30UL * 1000UL;
+
+// End-of-match validation: "OK? / HOLD" in turn with the set recap, on a
+// board synced to Firebase (CENTRAL/FIREBASE) whose channel has
+// match-<channel>/validation_required — set by RoundnetFranceConnect while it
+// has a tournament match on that court (_validationRequired, fed by the sync
+// paths); without it the match just ends on the recap. Holding a pedal fills the
+// panel — the pedal sends hold/a|b ~300ms into the press, hold/end if it's
+// released early, and its usual a|b/long at 2s, which confirms. A confirmed
+// result gets a nonce; the sync paths write it as match-<channel>/
+// result_validated {nonce, sets} and RoundnetFranceConnect answers in
+// match-<channel>/rfc_result {nonce, status, message?, next?}. The validation
+// belongs to the exact score it was given for (_valSig): any later change
+// (portal correction, reset, Firebase) drops it. RFC's answer is still taken
+// for VALIDATION_ANSWER_MS after the confirm though, because RFC records and
+// then immediately hands the court to the next match (score back to 0-0, new
+// team names) — the answer's "where do you play next" screen then runs on its
+// own (_resultUntilMs) over the next match's marquee, until it times out or
+// a pedal is pressed. No answer within ANSWER_TIMEOUT_MS (a tournament is
+// expected to answer — the Cloud Function or RFC must have failed) turns into
+// NO_ANSWER: a red "PAS DE REPONSE" then "OK? / HOLD" again, to retry with a
+// new nonce. All guarded by scoreMutex.
+enum class Validation : uint8_t { NONE, SENT, RECORDED, REJECTED, NO_ANSWER };
+static volatile bool _validationRequired = false;
+static Validation _valState     = Validation::NONE;
+static uint32_t   _valNonce     = 0;  // current validation, 0 = none
+static uint32_t   _valSig       = 0;  // _scoreSig() of the score it was given for
+static uint32_t   _lastNonce    = 0;  // last confirmed nonce, kept after a drop
+static uint32_t   _lastValMs    = 0;
+static uint32_t   _valRev       = 0;  // bumped on confirm/answer — restarts the display cycle
+static bool       _holdActive   = false;
+static uint32_t   _holdStartMs  = 0;
+static uint32_t   _holdEndMs    = 0;
+static float      _holdEndP     = 0.0f;
+static uint32_t   _resultNonce  = 0;  // nonce of the stored answer below
+static uint32_t   _resultUntilMs = 0; // result screen shown until then, 0 = not shown
+static bool       _resultRejected = false;
+static char       _resultMsg[48]  = "";
+static char       _nextA[24]      = "";
+static char       _nextB[24]      = "";
+static char       _resultNameA[TeamNames::MAX_LEN + 1] = "";
+static char       _resultNameB[TeamNames::MAX_LEN + 1] = "";
+static constexpr uint32_t HOLD_FILL_MS     = 1650;  // hold/x at ~300ms, x/long at 2000ms
+static constexpr uint32_t HOLD_DRAIN_MS    = 400;
+static constexpr uint32_t HOLD_LOST_MS     = HOLD_FILL_MS + 2500;  // hold/end never arrived
+static constexpr uint32_t VALIDATION_RESET_GUARD_MS = 3000;
+static constexpr uint32_t VALIDATION_ANSWER_MS      = 2UL * 60UL * 1000UL;
+static constexpr uint32_t RESULT_SHOW_MS            = 90UL * 1000UL;
+static constexpr uint32_t ANSWER_TIMEOUT_MS         = 30UL * 1000UL;
 
 static constexpr uint32_t BREAK_DURATION_MS    = 3UL * 60UL * 1000UL;
 static constexpr uint32_t TIMEOUT_COUNTDOWN_MS = 60UL * 1000UL;
@@ -134,6 +183,210 @@ inline void tickServerSelect() {
     _serverSelectActive = false;
     _introDismissed     = false;
   }
+}
+
+// ── End-of-match validation (see Validation above) ──────────────────────────
+
+inline bool validationEnabled() { return !Mode::isLocal() && _validationRequired; }
+inline void setValidationRequired(bool required) { _validationRequired = required; }
+
+// Identifies a score: every field that ends up in result_validated's sets.
+inline uint32_t _scoreSig(const Score& s) {
+  const uint8_t v[] = {s.scoreA, s.scoreB, s.setA, s.setB, s.histA[0], s.histB[0],
+                       s.histA[1], s.histB[1], s.histA[2], s.histB[2]};
+  uint32_t h = 2166136261u;
+  for (uint8_t b : v) h = (h ^ b) * 16777619u;
+  return h;
+}
+
+// Callers of the *Locked helpers hold scoreMutex.
+inline bool _validatedLocked() { return _valNonce != 0 && _valSig == _scoreSig(currentScore); }
+// Waiting for a confirm: never validated, or validated without any answer.
+inline bool _validationPendingLocked() {
+  return validationEnabled() && isMatchOver(currentScore) &&
+         (!_validatedLocked() || _valState == Validation::NO_ANSWER);
+}
+
+// Fill level of the "OK? / HOLD" screen: rises over HOLD_FILL_MS while held,
+// drains over HOLD_DRAIN_MS once released.
+inline float _holdProgressLocked(uint32_t now) {
+  if (_holdActive) {
+    uint32_t held = now - _holdStartMs;
+    if (held < HOLD_LOST_MS) return held >= HOLD_FILL_MS ? 1.0f : (float)held / HOLD_FILL_MS;
+    _holdActive = false;  // hold/end lost on the way: drain from full
+    _holdEndP   = 1.0f;
+    _holdEndMs  = now;
+  }
+  float p = _holdEndP - (float)(now - _holdEndMs) / HOLD_DRAIN_MS;
+  return p > 0.0f ? p : 0.0f;
+}
+
+inline float holdProgress() {
+  SCORE_LOCK();
+  float p = _holdProgressLocked(millis());
+  SCORE_UNLOCK();
+  return p;
+}
+
+// hold/a, hold/b, hold/end from the pedal. Never wakes the display (the long
+// press that follows does, and is swallowed like any press made while
+// asleep) and never touches timers or the score. Returns false either way:
+// nothing changed that a state push would need to carry.
+inline bool _applyHold(const char* arg) {
+  if (_dimActive) return false;
+  SCORE_LOCK();
+  uint32_t now = millis();
+  if (strcmp(arg, "end") == 0) {
+    if (_holdActive) {
+      _holdEndP    = _holdProgressLocked(now);
+      _holdEndMs   = now;
+      _holdActive  = false;
+    }
+  } else if (!_holdActive && _validationPendingLocked()) {
+    // Picks up from a fill that's still draining instead of jumping back to 0.
+    float p = _holdProgressLocked(now);
+    _holdStartMs    = now - (uint32_t)(p * HOLD_FILL_MS);
+    _holdActive     = true;
+    _lastActivityMs = now;
+  }
+  SCORE_UNLOCK();
+  return false;
+}
+
+// Confirms the current (match-over) score: a pedal long press on the "OK? /
+// HOLD" screen, or the portal's "Validate Score" button.
+inline void _confirmValidationLocked() {
+  _valNonce   = esp_random() | 1;
+  _valSig     = _scoreSig(currentScore);
+  _valState   = Validation::SENT;
+  _lastNonce  = _valNonce;
+  _lastValMs  = millis();
+  _valRev++;
+  _holdActive = false;
+  _holdEndP   = 0.0f;
+  const TeamNames::Names& n = TeamNames::get();
+  strlcpy(_resultNameA, n.teamA[0] ? n.teamA : "TEAM A", sizeof(_resultNameA));
+  strlcpy(_resultNameB, n.teamB[0] ? n.teamB : "TEAM B", sizeof(_resultNameB));
+  Serial.printf("[VALIDATE] result confirmed, nonce %08lx\n", (unsigned long)_valNonce);
+}
+
+// Portal entry point — false when there's nothing to validate (match not
+// over, already validated, or LOCAL mode).
+inline bool confirmValidation() {
+  notifyActivity();
+  SCORE_LOCK();
+  bool pending = _validationPendingLocked();
+  if (pending) _confirmValidationLocked();
+  SCORE_UNLOCK();
+  return pending;
+}
+
+// For the portal: "none" (nothing to validate), "pending" (match over, not
+// validated yet), "failed" (no answer — retry), or the validation's state.
+inline const char* validationStatus() {
+  SCORE_LOCK();
+  const char* st = _validatedLocked() && _valState == Validation::NO_ANSWER ? "failed"
+                 : _validationPendingLocked() ? "pending"
+                 : !_validatedLocked()        ? "none"
+                 : _valState == Validation::RECORDED ? "recorded"
+                 : _valState == Validation::REJECTED ? "rejected"
+                 : "sent";
+  SCORE_UNLOCK();
+  return st;
+}
+
+// Nonce of the validation given for `s`, 0 if none — what the sync paths
+// write as result_validated (null for 0).
+inline uint32_t validatedNonce(const Score& s) {
+  SCORE_LOCK();
+  uint32_t n = (_valNonce != 0 && _valSig == _scoreSig(s)) ? _valNonce : 0;
+  SCORE_UNLOCK();
+  return n;
+}
+
+// Nonce whose answer (rfc_result) is still awaited or may still change, 0 if
+// none — the sync paths only read rfc_result while this is set.
+inline uint32_t answerNonce() {
+  SCORE_LOCK();
+  uint32_t n = (_lastNonce != 0 && millis() - _lastValMs < VALIDATION_ANSWER_MS) ? _lastNonce : 0;
+  SCORE_UNLOCK();
+  return n;
+}
+
+// RoundnetFranceConnect's answer for `nonce`. Ignored unless it's for the
+// last confirmed result; the same answer read again changes nothing, an
+// updated one (e.g. a next court that became known) shows the screen again.
+inline void applyResult(uint32_t nonce, bool rejected, const char* msg,
+                        const char* nextA, const char* nextB) {
+  SCORE_LOCK();
+  if (nonce == 0 || nonce != _lastNonce) { SCORE_UNLOCK(); return; }
+  bool same = _resultNonce == nonce && _resultRejected == rejected &&
+              strcmp(_resultMsg, msg) == 0 && strcmp(_nextA, nextA) == 0 && strcmp(_nextB, nextB) == 0;
+  if (!same) {
+    _resultNonce    = nonce;
+    _resultRejected = rejected;
+    strlcpy(_resultMsg, msg,   sizeof(_resultMsg));
+    strlcpy(_nextA,     nextA, sizeof(_nextA));
+    strlcpy(_nextB,     nextB, sizeof(_nextB));
+    if (_valNonce == nonce) _valState = rejected ? Validation::REJECTED : Validation::RECORDED;
+    _resultUntilMs = (millis() + RESULT_SHOW_MS) | 1;
+    _valRev++;
+  }
+  SCORE_UNLOCK();
+  if (!same) notifyActivity();
+}
+
+// What the display shows for the current validation, NONE once dropped.
+inline Validation validationState() {
+  SCORE_LOCK();
+  Validation v = _validatedLocked() ? _valState : Validation::NONE;
+  SCORE_UNLOCK();
+  return v;
+}
+
+inline uint32_t validationRev() { return _valRev; }
+
+inline bool resultScreenActive() {
+  SCORE_LOCK();
+  bool on = _resultUntilMs != 0;
+  SCORE_UNLOCK();
+  return on;
+}
+
+struct ResultView {
+  bool rejected;
+  char msg[sizeof(_resultMsg)];
+  char nextA[sizeof(_nextA)];
+  char nextB[sizeof(_nextB)];
+  char nameA[sizeof(_resultNameA)];
+  char nameB[sizeof(_resultNameB)];
+};
+
+inline void resultView(ResultView& v) {
+  SCORE_LOCK();
+  v.rejected = _resultRejected;
+  strlcpy(v.msg,   _resultMsg,   sizeof(v.msg));
+  strlcpy(v.nextA, _nextA,       sizeof(v.nextA));
+  strlcpy(v.nextB, _nextB,       sizeof(v.nextB));
+  strlcpy(v.nameA, _resultNameA, sizeof(v.nameA));
+  strlcpy(v.nameB, _resultNameB, sizeof(v.nameB));
+  SCORE_UNLOCK();
+}
+
+// Called from main.cpp's loop: drops a validation whose score changed, turns
+// an unanswered one into NO_ANSWER, drops a hold that no longer has anything
+// to validate, and ends an expired result screen.
+inline void tickValidation() {
+  SCORE_LOCK();
+  if (_valNonce != 0 && !_validatedLocked()) { _valNonce = 0; _valState = Validation::NONE; }
+  if (_valNonce != 0 && _valState == Validation::SENT && millis() - _lastValMs >= ANSWER_TIMEOUT_MS) {
+    _valState = Validation::NO_ANSWER;
+    _valRev++;
+    Serial.println("[VALIDATE] no answer from the tournament app");
+  }
+  if (_holdActive && !_validationPendingLocked()) { _holdActive = false; _holdEndP = 0.0f; }
+  if (_resultUntilMs != 0 && (int32_t)(millis() - _resultUntilMs) >= 0) _resultUntilMs = 0;
+  SCORE_UNLOCK();
 }
 
 // Physical pedal presses only (a|b / single|double|long). Portal/webapp use
@@ -270,8 +523,22 @@ inline void applyFromDatabase(const Score& db) {
 }
 
 inline bool apply(const char* cmd) {
+  // Not "a/"/"b/"-prefixed on purpose: older firmware treats any of those as
+  // a game command (cancels a running timeout) — "hold/" it just ignores.
+  if (strncmp(cmd, "hold/", 5) == 0) return _applyHold(cmd + 5);
+  const bool wasAsleep = _dimActive;
   notifyActivity();
   SCORE_LOCK();
+
+  // A pedal press while the display sleeps only wakes it. The players can't
+  // see the board's state yet, and main.cpp's loop doesn't refresh
+  // _introShowing while asleep — so the press used to open "SERVE?" (or
+  // score a point) instead of letting the team-name marquee come back first.
+  bool wakeTeamA;
+  if (wasAsleep && _isPedalPress(cmd, wakeTeamA)) {
+    SCORE_UNLOCK();
+    return true;
+  }
 
   // Timer commands (timeout/break/medical) are mutually exclusive — starting
   // one always cancels whichever of the other two was running. Timeout and
@@ -369,6 +636,33 @@ inline bool apply(const char* cmd) {
   // Pre-match server selection (see _introShowing above).
   bool pedalTeamA = false;
   bool isPedal = _isPedalPress(cmd, pedalTeamA);
+
+  // End-of-match validation (see Validation above). Any pedal press closes a
+  // result screen — typically the next match's players arriving — and does
+  // nothing else. Once confirmed, pedals no longer change the result (the
+  // portal still can, which drops the validation) — unless no answer came
+  // (NO_ANSWER), where a long press retries. The pedal's very long
+  // press (reset) fires 2s after the long press that confirmed, so a player
+  // still holding would wipe the result: ignored right after a confirm.
+  if (isPedal && _resultUntilMs != 0) {
+    _resultUntilMs = 0;
+    SCORE_UNLOCK();
+    return true;
+  }
+  if (isPedal && _validatedLocked() && _valState != Validation::NO_ANSWER) {
+    SCORE_UNLOCK();
+    return false;
+  }
+  if (isPedal && strstr(cmd, "/long") && _validationPendingLocked()) {
+    _confirmValidationLocked();
+    SCORE_UNLOCK();
+    return true;
+  }
+  if (strcmp(cmd, "reset") == 0 && _lastValMs != 0 && millis() - _lastValMs < VALIDATION_RESET_GUARD_MS) {
+    SCORE_UNLOCK();
+    return false;
+  }
+
   if (isPedal && _serverSelectActive) {
     _serverSelectActive = false;
     currentScore.firstServer = pedalTeamA ? 0 : 1;
@@ -387,6 +681,7 @@ inline bool apply(const char* cmd) {
   if (strcmp(cmd, "reset") == 0) {
     _serverSelectActive = false;
     _introDismissed     = false;
+    _resultUntilMs      = 0;
   }
 
   bool changed = true;

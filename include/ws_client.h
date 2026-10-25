@@ -150,6 +150,32 @@ inline void pushState() {
   doc["teamTimers"] = true;
   // Reset counter — the bridge logs a change as an event_history reset.
   doc["resetCount"] = ScoreActions::resetCount();
+  // End-of-match validation (ScoreActions' Validation): the bridge writes
+  // `validation` as result_validated (null when absent — `canValidate` says
+  // this firmware would send it), and relays rfc_result back as set_result
+  // while `answerNonce` is set.
+  doc["canValidate"] = true;
+  uint32_t valNonce = ScoreActions::validatedNonce(s);
+  if (valNonce != 0) {
+    char hex[9];
+    snprintf(hex, sizeof(hex), "%08lx", (unsigned long)valNonce);
+    JsonObject val = doc["validation"].to<JsonObject>();
+    val["nonce"] = hex;
+    JsonArray sets = val["sets"].to<JsonArray>();
+    for (uint8_t i = 0; i < finishedSetCount(s); i++) {
+      uint8_t a, b;
+      finishedSetScore(s, i, a, b);
+      JsonArray set = sets.add<JsonArray>();
+      set.add(a);
+      set.add(b);
+    }
+  }
+  uint32_t awaited = ScoreActions::answerNonce();
+  if (awaited != 0) {
+    char hex[9];
+    snprintf(hex, sizeof(hex), "%08lx", (unsigned long)awaited);
+    doc["answerNonce"] = hex;
+  }
 
   uint8_t setsPlayed = s.setA + s.setB;
   JsonArray ha = doc["histA"].to<JsonArray>();
@@ -281,6 +307,16 @@ static void _handleCommand(const String& payload) {
     TeamNames::set(doc["teamA"]    | "", doc["teamB"]    | "",
                     doc["playerA1"] | "", doc["playerA2"] | "",
                     doc["playerB1"] | "", doc["playerB2"] | "");
+    pushState();
+  } else if (strcmp(action, "set_validation_required") == 0) {
+    // match-<channel>/validation_required, relayed by the bridge.
+    ScoreActions::setValidationRequired(doc["value"] | false);
+    pushState();
+  } else if (strcmp(action, "set_result") == 0) {
+    // rfc_result relayed by the bridge, for the nonce in our answerNonce.
+    uint32_t nonce = (uint32_t)strtoul(doc["nonce"] | "0", nullptr, 16);
+    ScoreActions::applyResult(nonce, strcmp(doc["status"] | "", "rejected") == 0,
+                              doc["message"] | "", doc["nextA"] | "", doc["nextB"] | "");
     pushState();
   } else if (strcmp(action, "sleep") == 0) {
     ScoreActions::activateSleep();
